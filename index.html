@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#7ec8e3">
-<title>Last Light Outpost</title>
+<title>Dawnhold</title>
 <style>
   /* Fredoka (SIL OFL 1.1, lib/fonts/OFL.txt), inlined so the game needs no font server */
   @font-face { font-family: 'Fredoka'; font-weight: 300 700; font-display: block;
@@ -215,7 +215,7 @@
     <div id="shop"><div class="sh-head"><span class="sh-ico">🏠</span><b>Shelter</b><span class="sh-lv"></span></div><div class="cards"></div></div>
   </div>
   <div id="joy"><div id="knob"></div></div>
-  <div id="loading"><h1>Last Light<br>Outpost<small>SURVIVE THE NIGHT</small></h1>
+  <div id="loading"><h1>Dawnhold<small>HOLD THE NIGHT · BUILD BY DAY</small></h1>
     <div id="loadBar"><b></b></div><button id="play">PLAY</button><p>Loading...</p><button id="newGame">New game</button></div>
   <div id="lost"><span>Tap to reload</span></div>
 </div>
@@ -239,7 +239,7 @@ const CONFIG = {
   sim: { step: 1 / 60, maxDelta: 0.1 },
   // Progress is saved in the browser (localStorage) every few seconds and on every build.
   // A reload puts you back at the start of the day you were on, with everything you built.
-  save: { key: 'lastLightOutpost.save.v1', every: 5 },
+  save: { key: 'dawnhold.save.v2', every: 5 },   // bump the version whenever map generation changes
   // Prices in plots/gunLevels/zones are base prices. Every new thing you build makes
   // the next unpaid one pricier: price = base * (1 + growth * built), so the start is cheap.
   economy: { growth: 0.07 },
@@ -247,20 +247,39 @@ const CONFIG = {
   world: { halfSize: 0, clearRadius: 17 },   // halfSize is set from the zone grid below
   // The map is a honeycomb of hexagon zones. Home (center) is open; every other zone is fogged until unlocked.
   zones: {
-    size: 22, radius: 2,                 // size = hex corner radius; radius 2 = home + 2 rings (19 zones)
+    size: 22, radius: 3,                 // size = hex corner radius; radius 3 = home + 3 rings (37 zones)
     unlockCost: 10, costGrowth: 2,       // base price: ring 1 = 10, ring 2 = 20 (before economy growth)
     plotInset: 3,                        // unlock plot sits this far inside open land
     content: {                           // what each zone holds
       trees: 14, rocks: 4, ruins: 2,
-      buildings: [0, 2, 3],              // by ring (home, ring 1, ring 2)
+      buildings: [0, 2, 3, 3],           // by ring (home, ring 1, ring 2, ring 3)
       wrecksOnRoad: 2,
-      campChance: [0, 0.5, 0.35],        // chance of a survivor camp, by ring
+      campChance: [0, 0.5, 0.35, 0.3],   // chance of a survivor camp, by ring
       crates: [2, 4], crateScrap: [5, 10],
       homeCrates: 3, homeCrateClear: 13, // a few crates just outside the outpost so the first minute pays
       crateRespawn: 18, cratesPerZone: 2, cratePool: 60,   // a new crate every N seconds while open zones have room
       search: { range: 2.4, time: 1.3, scrap: [8, 15] },   // stand at a house's front to search it once
     },
     fog: { color: 0xf4f7fb, slabColor: 0xd5deea, height: 3.5, puffs: 16, puffSize: [4.5, 7.5] },
+  },
+  // Biomes: every zone past ring 1 can become a forest, hills, a lake or a mountain, picked from the
+  // map seed. Mountains can't be entered (they never get an unlock plot); a mountain range rings the map.
+  // Mountains and lakes stay off the two main roads (roadClear) and never cut a zone off from home.
+  biomes: {
+    counts: { mountain: 4, lake: 2, forest: 6, hills: 6 }, fromRing: 2, roadClear: 24,
+    ground: { forest: 0x4f9e3a, hills: 0x8fd35a, lake: 0x79c25a, city: 0xb8b0a0, rail: 0xa89a82, dock: 0xc9b38a },
+    forest: { treeMul: 2.4 },
+    hills: { mounds: 6, moundSize: [3, 5.5], color: 0x7cc152, rocksMul: 2 },
+    lake: { radius: 11, shore: 13, water: 0x4fb8e8, sand: 0xf3dea6, treeMul: 0.5 },
+    mountain: { peaks: 7, height: [11, 19], width: [6, 9.5], rimPeaks: 5, rock: 0x9a93ad, snow: 0xffffff },
+  },
+  // Landmarks: one of each in the outer ring. Pricier to unlock, guarded by a pack of zombies,
+  // and full of big loot spots (search them like houses).
+  landmarks: {
+    costMul: 1.5, guards: 7, loot: [20, 35],
+    city:  { label: '🏙️ City', houses: 7, treeMul: 0.25, crates: 5 },
+    rail:  { label: '🚉 Rail Station', boxcars: 4, colors: [0xc0463a, 0x8a5a3c, 0x4f6fa8] },
+    dock:  { label: '⚓ Dockyard', containers: 6, colors: [0xe0533c, 0x2f8fff, 0xf2a20c, 0x1fae4b] },
   },
   player: { speed: 7, turnSpeed: 14, radius: 0.5, sprintAt: 0.75, walkAnimSpeed: 1.8, sprintAnimSpeed: 1.1,
     // Health: heals slowly once nothing has bitten you for regenDelay seconds. At 0 you go down,
@@ -664,9 +683,38 @@ function hexesWithin(radius) {
 function makeZones() {
   for (const [q, r] of hexesWithin(CONFIG.zones.radius)) {
     const [cx, cz] = hexCenter(q, r), ring = hexRing(q, r);
-    const zone = { q, r, cx, cz, ring, unlocked: ring === 0, obstacles: [], hasPlot: false, fog: [], fade: 1 };
+    const zone = { q, r, cx, cz, ring, unlocked: ring === 0, obstacles: [], hasPlot: false, fog: [], fade: 1, kind: 'meadow' };
     ZONES.push(zone); ZONE_MAP.set(`${q},${r}`, zone);
   }
+  assignBiomes();
+}
+// Pick each zone's biome (runs on the seeded random, so a save gets the same map back)
+function assignBiomes() {
+  const B = CONFIG.biomes, offRoad = (z) => Math.abs(z.cx) > B.roadClear && Math.abs(z.cz) > B.roadClear;
+  const free = () => ZONES.filter(z => z.ring >= B.fromRing && z.kind === 'meadow');
+  const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [a[i], a[j]] = [a[j], a[i]]; } return a; };
+  // Landmarks first, in the outer ring. The dockyard sits on a lake.
+  const outer = shuffle(ZONES.filter(z => z.ring === CONFIG.zones.radius));
+  const dock = outer.find(offRoad); if (dock) { dock.kind = 'lake'; dock.landmark = 'dock'; }
+  for (const lm of ['city', 'rail']) { const z = outer.find(o => o.kind === 'meadow'); if (z) { z.kind = lm; z.landmark = lm; } }
+  // Mountains: only where every other zone can still be reached from home
+  const reachable = () => {
+    const seen = new Set([ZONES[0]]), todo = [ZONES.find(z => z.ring === 0)];
+    while (todo.length) {
+      const z = todo.pop();
+      for (const [dq, dr] of HEX_DIRS) { const n = zoneAtIndex(z.q + dq, z.r + dr); if (n && !n.blocked && !seen.has(n)) { seen.add(n); todo.push(n); } }
+    }
+    return ZONES.every(z => z.blocked || seen.has(z));
+  };
+  let m = 0;
+  for (const z of shuffle(free().filter(offRoad))) {
+    if (m >= B.counts.mountain) break;
+    z.kind = 'mountain'; z.blocked = true;
+    if (reachable()) m++; else { z.kind = 'meadow'; z.blocked = false; }
+  }
+  shuffle(free().filter(offRoad)).slice(0, B.counts.lake).forEach(z => { z.kind = 'lake'; });
+  shuffle(free()).slice(0, B.counts.forest).forEach(z => { z.kind = 'forest'; });
+  shuffle(free()).slice(0, B.counts.hills).forEach(z => { z.kind = 'hills'; });
 }
 const zoneAtIndex = (q, r) => ZONE_MAP.get(`${q},${r}`) || null;
 // World position → the hex it falls in (axial coords, rounded through cube coords)
@@ -722,13 +770,124 @@ function addProp(list, key, x, z, scale, rotY, tilt = 0, shadow = 1) {
   if (shadow) propShadows.push([x, z, r * 2.6 * shadow]);
 }
 
+// ---- Biome and landmark builders. Shapes are collected into lists and drawn as a few InstancedMeshes.
+const worldGfx = { peaks: [], mounds: [], ground: [], boxes: [] };   // boxes: [matrix, color]
+function mountainPeaks(cx, cz, count, zone) {
+  const M = CONFIG.biomes.mountain, R = CONFIG.zones.size * 0.75;
+  for (let i = 0; i < count; i++) {
+    const a = i === 0 ? 0 : rand(0, Math.PI * 2), d = i === 0 ? 0 : R * Math.sqrt(rand(0.15, 1));
+    const x = cx + Math.cos(a) * d, z = cz + Math.sin(a) * d, w = rand(M.width[0], M.width[1]), h = rand(M.height[0], M.height[1]) * (i === 0 ? 1.15 : 1);
+    worldGfx.peaks.push(new THREE.Matrix4().compose(_v.set(x, 0, z), _q.setFromEuler(_e.set(0, rand(0, 6), 0)), _s.set(w, h, w)));
+    if (zone) addObstacle({ x, z, r: w * 0.8 });
+  }
+  if (zone) worldGfx.ground.push([zone, CONFIG.biomes.mountain.rock]);
+}
+function buildLake(zone) {
+  const L = CONFIG.biomes.lake;
+  zone.lake = { x: zone.cx, z: zone.cz };
+  const sand = new THREE.Mesh(new THREE.CylinderGeometry(L.shore, L.shore, 0.06, 14), flat(L.sand));
+  const water = new THREE.Mesh(new THREE.CylinderGeometry(L.radius, L.radius, 0.1, 14), flat(L.water));
+  sand.position.set(zone.cx, 0.03, zone.cz); water.position.set(zone.cx, 0.06, zone.cz);
+  scene.add(sand, water);
+  addObstacle({ x: zone.cx, z: zone.cz, r: L.radius });        // water: nobody walks through it
+  worldGfx.ground.push([zone, CONFIG.biomes.ground.lake]);
+}
+function buildHills(zone, rocks) {
+  const H = CONFIG.biomes.hills;
+  for (let i = 0; i < H.mounds; i++) {
+    const sz = rand(H.moundSize[0], H.moundSize[1]), spot = zoneSpot(zone, sz);
+    if (!spot) continue;
+    worldGfx.mounds.push(new THREE.Matrix4().compose(_v.set(spot[0], 0, spot[1]), _q.setFromEuler(_e.set(0, rand(0, 6), 0)), _s.set(sz, sz * 0.5, sz)));
+    addObstacle({ x: spot[0], z: spot[1], r: sz * 0.85 });
+  }
+  worldGfx.ground.push([zone, CONFIG.biomes.ground.hills]);
+}
+// A solid box prop (boxcar, container, crane part): drawn in one shared InstancedMesh
+function boxProp(x, y, z, w, h, d, rot, color, solid = true) {
+  worldGfx.boxes.push([new THREE.Matrix4().compose(_v.set(x, y + h / 2, z), _q.setFromEuler(_e.set(0, rot, 0)), _s.set(w, h, d)), color]);
+  if (!solid) return;
+  // Long boxes get a row of circles so the collision matches their length
+  const n = Math.max(1, Math.round(Math.max(w, d) / Math.min(w, d))), long = w >= d, len = Math.max(w, d), r = Math.min(w, d) * 0.6;
+  for (let i = 0; i < n; i++) {
+    const t = (i + 0.5) / n - 0.5, ox = long ? Math.cos(rot) * t * len : Math.sin(rot) * t * len, oz = long ? -Math.sin(rot) * t * len : Math.cos(rot) * t * len;
+    addObstacle({ x: x + ox, z: z + oz, r });
+  }
+}
+// A big loot spot (boxcar, container): stand at its pad to search it once
+function lootSpot(zone, x, z) {
+  zone.obstacles.push({ x, z, r: 1.2 });
+  G.houses.push({ x, z, zone, searched: false, t: 0, pad: null, el: null, scrap: CONFIG.landmarks.loot });
+  zone.loot.houses++;
+}
+function buildLandmark(zone, lists) {
+  const LM = CONFIG.landmarks, M = CONFIG.models, kind = zone.landmark;
+  worldGfx.ground.push([zone, CONFIG.biomes.ground[kind]]);
+  if (kind === 'rail') {
+    // Tracks east-west through the zone, a station house beside them, boxcars waiting on the line
+    const L = CONFIG.zones.size * 1.6, cz = zone.cz, cx = zone.cx;
+    boxProp(cx, 0.02, cz, L, 0.05, 2.6, 0, 0x8a7a66, false);                       // gravel bed
+    for (const off of [-0.7, 0.7]) boxProp(cx, 0.06, cz + off, L, 0.12, 0.16, 0, 0x5b6789, false);
+    for (let x = -L / 2; x <= L / 2; x += 1.4) boxProp(cx + x, 0.04, cz, 0.35, 0.08, 2.2, 0, 0x6b4a2f, false);
+    for (let x = -L / 2; x <= L / 2; x += 3) zone.obstacles.push({ x: cx + x, z: cz, r: 2.2 });   // keep trees off the line
+    boxProp(cx, 0.02, cz - 3.6, 12, 0.6, 3, 0, 0xc9c2b0, false);                     // platform
+    addProp(lists.houseB, 'houseB', cx, cz - 8.5, M.houseB.scale, 0, 0, 0.6);
+    zone.obstacles.push({ x: cx, z: cz - 8.5, r: 4.5 });
+    const R = LM.rail;
+    for (let i = 0; i < R.boxcars; i++) {
+      const x = cx + (i - (R.boxcars - 1) / 2) * 6.2 + 4;
+      boxProp(x, 0.3, cz, 5.2, 2.6, 2.3, 0, R.colors[i % R.colors.length]);
+      boxProp(x, 2.9, cz, 5.4, 0.25, 2.5, 0, 0x5b6789, false);                       // roof
+      lootSpot(zone, x, cz + 2.9);
+    }
+  } else if (kind === 'dock') {
+    // Shipping containers on the shore, a crane over the water, a pier
+    const D = LM.dock, L = CONFIG.biomes.lake, a0 = Math.atan2(-zone.cx, -zone.cz);   // the shore side facing home
+    for (let i = 0; i < D.containers; i++) {
+      const a = a0 + (i - (D.containers - 1) / 2) * 0.32, d = L.shore + 2.5, x = zone.cx + Math.sin(a) * d, z = zone.cz + Math.cos(a) * d;
+      const rot = a + Math.PI / 2, col = D.colors[i % D.colors.length];
+      boxProp(x, 0, z, 4.6, 2.4, 2.2, rot, col);
+      if (i % 2 === 0) boxProp(x, 2.4, z, 4.6, 2.4, 2.2, rot + 0.05, D.colors[(i + 2) % D.colors.length], false);   // stacked
+      lootSpot(zone, x + Math.sin(a) * 2.6, z + Math.cos(a) * 2.6);
+    }
+    const ca = a0 + 1.4, cx = zone.cx + Math.sin(ca) * (L.shore + 1.5), cz = zone.cz + Math.cos(ca) * (L.shore + 1.5);
+    boxProp(cx, 0, cz, 1.2, 12, 1.2, 0, 0xf2c230);                                    // crane tower
+    boxProp(cx - Math.sin(ca) * 4, 12, cz - Math.cos(ca) * 4, 1, 1, 11, ca, 0xf2c230, false);   // arm out over the water
+    boxProp(cx - Math.sin(ca) * 8.5, 7, cz - Math.cos(ca) * 8.5, 0.15, 5, 0.15, 0, 0x1e2a4a, false);   // cable
+    const pa = a0 - 1.2;
+    boxProp(zone.cx + Math.sin(pa) * (L.radius - 2), 0.12, zone.cz + Math.cos(pa) * (L.radius - 2), 2.4, 0.25, 8, pa, 0xa8743f, false);   // pier
+  }
+}
+// Draw everything the builders collected: peaks with snow caps, hill mounds, tinted zone ground, boxes
+function flushWorldGfx() {
+  const B = CONFIG.biomes, W = worldGfx;
+  const peak = new THREE.ConeGeometry(1, 1, 6).translate(0, 0.5, 0), cap = new THREE.ConeGeometry(0.4, 0.4, 6).translate(0, 0.8, 0);
+  chunkedInstances(peak, flat(B.mountain.rock), W.peaks);
+  chunkedInstances(cap, flat(B.mountain.snow), W.peaks);
+  chunkedInstances(new THREE.IcosahedronGeometry(1, 1), flat(B.hills.color), W.mounds);
+  // Biome ground: a slightly tinted hexagon under each special zone
+  const hexGeo = new THREE.CylinderGeometry(CONFIG.zones.size, CONFIG.zones.size, 0.02, 6, 1, false, Math.PI / 6);
+  const ground = new THREE.InstancedMesh(hexGeo, new THREE.MeshLambertMaterial({ flatShading: true }), Math.max(1, W.ground.length));
+  ground.count = W.ground.length;
+  W.ground.forEach(([zone, col], i) => { ground.setMatrixAt(i, _m.makeTranslation(zone.cx, 0.003, zone.cz)); ground.setColorAt(i, _c.setHex(col)); });
+  scene.add(ground);
+  const boxes = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLambertMaterial({ flatShading: true }), Math.max(1, W.boxes.length));
+  boxes.count = W.boxes.length;
+  W.boxes.forEach(([m, col], i) => { boxes.setMatrixAt(i, m); boxes.setColorAt(i, _c.setHex(col)); });
+  scene.add(boxes);
+}
 function buildProps() {
   const Z = CONFIG.zones, C = Z.content, M = CONFIG.models, SV = CONFIG.survivors;
   const lists = { houseA: [], houseB: [], garage: [], wreckA: [], wreckB: [], ruin: [], tree: [] };
-  const rocks = [];
+  const rocks = [], B = CONFIG.biomes, LM = CONFIG.landmarks;
   for (const zone of ZONES) {
     zone.loot = { houses: 0, crates: 0, camp: false };   // shown on the zone's unlock bubble
     const ring = Math.min(zone.ring, C.campChance.length - 1);
+    if (zone.kind === 'mountain') { mountainPeaks(zone.cx, zone.cz, B.mountain.peaks, zone); continue; }
+    if (zone.kind === 'lake') buildLake(zone);
+    if (zone.kind === 'hills') buildHills(zone, rocks);
+    if (zone.landmark) buildLandmark(zone, lists);
+    const treeMul = zone.kind === 'forest' ? B.forest.treeMul : zone.kind === 'lake' ? B.lake.treeMul : zone.landmark ? LM[zone.landmark].treeMul ?? 0.6 : 1;
+    const rockMul = zone.kind === 'hills' ? B.hills.rocksMul : 1;
     // A survivor camp first, so nothing else lands on it
     if (zone.ring > 0 && Math.random() < C.campChance[ring]) {
       const spot = zoneSpot(zone, SV.campRadius + 3, 7);
@@ -742,7 +901,8 @@ function buildProps() {
       }
     }
     // Ruined houses, more of them further out
-    for (let i = 0; i < C.buildings[Math.min(zone.ring, C.buildings.length - 1)]; i++) {
+    const houses = zone.landmark === 'city' ? LM.city.houses : zone.landmark ? 0 : C.buildings[Math.min(zone.ring, C.buildings.length - 1)];
+    for (let i = 0; i < houses; i++) {
       const key = pick(['houseA', 'houseB', 'garage']), spot = zoneSpot(zone, 4.5, 7);
       if (!spot) continue;
       const face = Math.round(Math.atan2(-spot[0], -spot[1]) / (Math.PI / 2)) * (Math.PI / 2);
@@ -750,7 +910,7 @@ function buildProps() {
       // The search spot sits in front of the house, facing the roads
       const d = M[key].radius * M[key].scale + 1.4, hx = spot[0] + Math.sin(face) * d, hz = spot[1] + Math.cos(face) * d;
       zone.obstacles.push({ x: hx, z: hz, r: 1.2 });       // keeps trees off it (placement only, not solid)
-      G.houses.push({ x: hx, z: hz, zone, searched: false, t: 0, pad: null, el: null });
+      G.houses.push({ x: hx, z: hz, zone, searched: false, t: 0, pad: null, el: null, scrap: zone.landmark ? LM.loot : null });
       zone.loot.houses++;
     }
     // Abandoned trucks along the roads, a bit crooked
@@ -768,11 +928,11 @@ function buildProps() {
       const s = scaleOf(M.ruin.scale), spot = zoneSpot(zone, 1.2);
       if (spot) addProp(lists.ruin, 'ruin', spot[0], spot[1], s, rand(0, 6));
     }
-    for (let i = 0; i < C.trees; i++) {
+    for (let i = 0; i < Math.round(C.trees * treeMul); i++) {
       const s = scaleOf(M.tree.scale), spot = zoneSpot(zone, 1);
       if (spot) addProp(lists.tree, 'tree', spot[0], spot[1], s, rand(0, 6), rand(-0.05, 0.05));
     }
-    for (let i = 0; i < C.rocks; i++) {
+    for (let i = 0; i < C.rocks * rockMul; i++) {
       const spot = zoneSpot(zone, 1);
       if (!spot) continue;
       const sc = rand(0.6, 1.3);
@@ -781,12 +941,15 @@ function buildProps() {
       propShadows.push([spot[0], spot[1], 2 * sc]);
     }
     // Loot crates: walk into them to smash them open for scrap. Home gets a few just outside the outpost.
-    const n = zone.ring > 0 ? C.crates[0] + ((Math.random() * (C.crates[1] - C.crates[0] + 1)) | 0) : C.homeCrates;
+    const n = zone.landmark === 'city' ? LM.city.crates : zone.ring > 0 ? C.crates[0] + ((Math.random() * (C.crates[1] - C.crates[0] + 1)) | 0) : C.homeCrates;
     for (let i = 0; i < n; i++) {
       const spot = zone.ring > 0 ? zoneSpot(zone, 1.2) : zoneSpot(zone, 1.2, 4, 40, C.homeCrateClear);
       if (spot) { G.crates.push({ x: spot[0], z: spot[1], alive: true, rot: rand(0, 6) }); zone.loot.crates++; }
     }
   }
+  // A mountain range around the whole map: the edge of the world
+  for (const [q, r] of hexesWithin(Z.radius + 1)) if (!zoneAtIndex(q, r)) { const [x, z] = hexCenter(q, r); mountainPeaks(x, z, B.mountain.rimPeaks, null); }
+  flushWorldGfx();
   for (const [key, list] of Object.entries(lists)) instanceModel(key, list, key.startsWith('wreck') ? CONFIG.colors.wreckTint : 0);
 
   // Rocks stay procedural (no rock model in these packs)
@@ -866,8 +1029,8 @@ function houseSystem(dt) {
     h.t = on ? h.t + dt : Math.max(0, h.t - dt);
     if (h.t < S.time) continue;
     h.searched = true;
-    const n = S.scrap[0] + ((Math.random() * (S.scrap[1] - S.scrap[0] + 1)) | 0);
-    for (let i = 0; i < n; i++) spawnScrap(h.x, h.z, 1);
+    const [lo, hi] = h.scrap || S.scrap, n = lo + ((Math.random() * (hi - lo + 1)) | 0);
+    for (let i = 0; i < n; i++) spawnScrap(h.x, h.z, n > 20 ? 2 : 1);
     burst(h.x, 1.2, h.z, 12, CONFIG.colors.scrap);
     toast(`Found ${n} scrap!`);
   }
@@ -889,9 +1052,9 @@ function syncHouses() {
 const fogGfx = { slab: null, puffs: null, dirty: true };
 function buildFog() {
   const Z = CONFIG.zones, F = Z.fog, tiles = [];
-  for (const [q, r] of hexesWithin(Z.radius + 1)) {
+  for (const [q, r] of hexesWithin(Z.radius)) {
     const zone = zoneAtIndex(q, r);
-    if (zone && zone.unlocked) continue;
+    if (zone.unlocked || zone.blocked) continue;           // mountains stay visible, never fogged
     const [x, z] = hexCenter(q, r);
     tiles.push({ x, z, zone });
   }
@@ -938,26 +1101,28 @@ function syncFog(dt) {
 
 // Zombies come out of the fog: spawn points along every border between open and fogged land
 function rebuildFrontier() {
-  const S = CONFIG.zones.size, out = [];
+  const S = CONFIG.zones.size, out = [], rim = [];
   for (const zone of ZONES) {
     if (!zone.unlocked) continue;
     for (const [dq, dr] of HEX_DIRS) {
       const n = zoneAtIndex(zone.q + dq, zone.r + dr);
-      if (n && n.unlocked) continue;
+      if (n && (n.unlocked || n.blocked)) continue;         // zombies don't come over the mountains
       // a line segment along the shared edge, just inside the fog
       const [nx, nz] = hexCenter(zone.q + dq, zone.r + dr), d = Math.hypot(nx - zone.cx, nz - zone.cz);
       const ux = (nx - zone.cx) / d, uz = (nz - zone.cz) / d;
-      out.push({ x: (zone.cx + nx) / 2 + ux * 2, z: (zone.cz + nz) / 2 + uz * 2, ax: -uz, az: ux, half: S * 0.45 });
+      const k = n ? 2 : -3;   // just inside the fog, or just in front of the mountains
+      (n ? out : rim).push({ x: (zone.cx + nx) / 2 + ux * k, z: (zone.cz + nz) / 2 + uz * k, ax: -uz, az: ux, half: S * 0.45 });
     }
   }
-  G.frontier = out;
+  // Fog borders first; once the whole map is open, they come down from the edge of the world
+  G.frontier = out.length ? out : rim.length ? rim : [{ x: 0, z: -CONFIG.world.halfSize + 6, ax: 1, az: 0, half: 20 }];
 }
 
 // Each fogged zone next to open land gets one unlock plot on the shared border
 function refreshZonePlots() {
   const Z = CONFIG.zones;
   for (const zone of ZONES) {
-    if (zone.unlocked || zone.hasPlot) continue;
+    if (zone.unlocked || zone.hasPlot || zone.blocked) continue;
     const opens = HEX_DIRS.map(([dq, dr]) => zoneAtIndex(zone.q + dq, zone.r + dr)).filter(n => n && n.unlocked);
     if (!opens.length) continue;
     const from = opens.sort((a, b) => a.ring - b.ring)[0];
@@ -965,9 +1130,10 @@ function refreshZonePlots() {
     const k = Z.plotInset / (Z.size * SQ3);   // pull the plot back onto open ground
     const x = mx + (from.cx - zone.cx) * k, z = mz + (from.cz - zone.cz) * k;
     zone.hasPlot = true;
-    const L = zone.loot, info = [L.camp && '🧑 Survivors', L.houses && `🏠 ${L.houses}`, L.crates && `📦 ${L.crates}`].filter(Boolean).join(' · ');
-    addPlot({ id: `zone${zone.q}_${zone.r}`, type: 'zone', label: 'Unlock Area', info, x, z,
-      cost: Math.round(Z.unlockCost * Z.costGrowth ** (zone.ring - 1)), requires: 'shelter', zone });
+    const L = zone.loot, LM = zone.landmark && CONFIG.landmarks[zone.landmark];
+    const info = [LM && LM.label, L.camp && '🧑 Survivors', L.houses && `🏠 ${L.houses}`, L.crates && `📦 ${L.crates}`].filter(Boolean).join(' · ');
+    addPlot({ id: `zone${zone.q}_${zone.r}`, type: 'zone', label: LM ? `Unlock ${LM.label.split(' ').slice(1).join(' ')}` : 'Unlock Area', info, x, z,
+      cost: Math.round(Z.unlockCost * Z.costGrowth ** (zone.ring - 1) * (LM ? CONFIG.landmarks.costMul : 1)), requires: 'shelter', zone });
   }
 }
 function unlockZone(zone) {
@@ -976,7 +1142,11 @@ function unlockZone(zone) {
   burst(zone.cx, 3, zone.cz, 20, 0xffffff, 1.5);
   rebuildFrontier();
   refreshZonePlots();
-  toast('New area unlocked!');
+  if (zone.landmark && !restoring) {
+    // Landmarks are guarded: a pack shambles out as soon as the fog lifts
+    for (let i = 0; i < CONFIG.landmarks.guards; i++) spawnZombie([zone.cx + rand(-8, 8), zone.cz + rand(-8, 8)]);
+    toast(`${CONFIG.landmarks[zone.landmark].label} unlocked! Watch out!`, 2600);
+  } else toast('New area unlocked!');
 }
 
 // Animated character (player and rescued survivors) with a gun in the right hand.
@@ -1200,12 +1370,13 @@ const zombieGrid = makeGrid(CONFIG.world.halfSize + 20, CONFIG.grid.cell, CONFIG
 let obstacleGrid;   // built once after props are placed (cell 8 so the 3x3 query covers big buildings)
 const nearBuf = new Int32Array(256);   // reused query results, so the loop never allocates
 
-function spawnZombie() {
+function spawnZombie(at) {
   const Z = CONFIG.zombies, D = CONFIG.days, k = G.day - 1, z = G.zombies.find(o => !o.alive);
   if (!z) return;
   // Walk out of the fog somewhere along the open/fog border, not right next to the player
   const p = G.player;
-  for (let t = 0; t < 6; t++) {
+  if (at) { z.x = at[0]; z.z = at[1]; }
+  else for (let t = 0; t < 6; t++) {
     const f = pick(G.frontier), along = rand(-f.half, f.half);
     z.x = f.x + f.ax * along; z.z = f.z + f.az * along;
     if (Math.hypot(z.x - p.x, z.z - p.z) > Z.minSpawnFromPlayer) break;
