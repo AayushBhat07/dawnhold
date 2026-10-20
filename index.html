@@ -84,6 +84,7 @@
   .bubble.help .cost { font-size: 17px; }
   .bubble.site { padding: 3px 12px; color: var(--ink); background: var(--paper); animation: none; }
   .bubble.site .cost { font-size: 16px; }
+  .bubble.site.zyard { color: #fff; background: #5a3a6a; animation: bob 0.9s ease-in-out infinite; }
   .bubble.site.full { background: var(--yellow); animation: bob 1.2s ease-in-out infinite; }
   .bubble.door { color: #fff; background: var(--purple); text-shadow: 0 2px 0 rgba(30,42,74,.35); }
   .bubble .info { display: none; font-size: 12px; color: var(--ink); }
@@ -506,6 +507,10 @@ const CONFIG = {
         bunk:     { name: 'Bunkhouse',   icon: '🛏️', beds: 2, tint: 0xc8e6ff },
       },
     },
+    // Militia: once the Armory is built, refugees inside the walls shoot zombies at night.
+    // Guards (a job) stand at the wall corners and shoot day and night, a bit better.
+    // Every Armory gun level makes them gunBonus stronger.
+    militia: { range: 11, fireRate: 0.9, damage: 0.7, guardMul: 1.4, gunBonus: 0.15, guardSlots: 6 },
     // Every refugee eats; with no food, workers work at half speed
     food: { start: 30, eatPerMin: 0.5 },
     roads: { cost: 20, outputMul: 1.5, beds: 2, houses: 2, houseScale: 4.5, houseTint: 0xffe2c4, lampEvery: 7, width: 3.2 },
@@ -538,6 +543,14 @@ const CONFIG = {
   sites: {
     plotOffset: 5,                       // build plot sits this far from the camp, toward the outpost
     payEvery: 4,                         // work sites pay their scrap straight into your pile every few seconds
+    // Raids: at night some zombies go for a Scrap Yard instead of you. A yard counts as hit when zombies
+    // spend hitSeconds inside it in one night; hit `overrunAfter` nights in a row it becomes a Zombie Yard
+    // (no scrap) guarded by a pack and a boss. Kill them all to take it back (+retakeReward scrap).
+    raid: { chance: 0.3, hitSeconds: 6, reach: 2.4, overrunAfter: 2, playerRange: 11, pack: 7, retakeReward: 40,
+      boss: { hp: 14, scale: 1.8, speed: 0.75, color: [1.25, 0.55, 0.55] }, packRange: 14 },
+    // Level 2+ yards get a fence (zombies can break it; fixed at dawn for repairCost scrap) and an armed guard
+    fence: { radius: 3.2, pieces: 12, hp: 70, hpPerLevel: 35, repairCost: 6, color: 0xa8743f },
+    guard: { range: 13, fireRate: 1.5, damage: 1.2, tint: 0x6fbf73 },
     yardLevels: [                        // rate = scrap per minute, cap = most it holds
       { cost: 8, rate: 10, cap: 25 },
       { cost: 20, rate: 18, cap: 45 },
@@ -612,6 +625,7 @@ const G = {
   extraBeds: 0,                       // beds added by roads out to the yards
   res: { wood: 0, stone: 0, food: 0 }, // town materials
   hallLevel: 0,                       // Town Hall level (1 once you're a town)
+  yardGuards: [],                     // armed guards at level 2+ Scrap Yards
   hungry: false,
   towers: [],                         // built watchtowers { x, z, guard }
   campSpots: [],                      // where survivor camps were placed
@@ -1552,7 +1566,7 @@ function spawnZombie(at) {
     z.x = f.x + f.ax * along; z.z = f.z + f.az * along;
     if (Math.hypot(z.x - p.x, z.z - p.z) > Z.minSpawnFromPlayer) break;
   }
-  z.alive = true; z.vx = z.vz = 0;
+  z.alive = true; z.vx = z.vz = 0; z.raid = z.pack = null; z.boss = false; z.byAlly = false;
   z.hp = Z.hp * (1 + D.hpPerDay * k); z.flash = 0; z.dying = 0;
   z.speed = rand(Z.speed[0], Z.speed[1]) * (1 + D.speedPerDay * k);
   z.scale = rand(Z.scale[0], Z.scale[1]);
@@ -1562,6 +1576,7 @@ function spawnZombie(at) {
   const v = 1 + rand(-Z.tintVariance, Z.tintVariance);
   z.color.setRGB(v, v * rand(0.95, 1.05), v);
   G.zombieCount++;
+  return z;
 }
 
 // Day/night clock: a few wanderers by day, a horde every night, bigger each day
@@ -1594,7 +1609,8 @@ function directorSystem(dt) {
   } else {
     const every = D.hordeSpawnTime / hordeSize();
     while (G.spawnTimer <= 0 && G.hordeLeft > 0 && G.zombieCount < CONFIG.zombies.max) {
-      spawnZombie(); G.hordeLeft--; G.spawnTimer += every;
+      const z = spawnZombie(); G.hordeLeft--; G.spawnTimer += every;
+      if (z && Math.random() < CONFIG.sites.raid.chance) z.raid = nearestYard(z.x, z.z);
     }
     if (G.spawnTimer < 0) G.spawnTimer = 0;   // pool full: try again next step
   }
@@ -1613,11 +1629,19 @@ function zombieSystem(dt) {
       if (z.dying <= 0) { z.alive = false; G.zombieCount--; }
       continue;
     }
-    // Chase the player
-    let dx = p.x - z.x, dz = p.z - z.z;
+    // Chase the player, unless it's raiding a yard or guarding a Zombie Yard (and you're not close)
+    let dx = p.x - z.x, dz = p.z - z.z, stop = Z.stopDistance, speed = z.speed;
+    const RD = CONFIG.sites.raid, pd0 = Math.hypot(dx, dz);
+    if (z.raid && (z.raid.overrun || G.phase === 'day')) z.raid = null;
+    if (z.raid && pd0 > RD.playerRange) {
+      dx = z.raid.x - z.x; dz = z.raid.z - z.z; stop = 1.2;
+      if (Math.hypot(dx, dz) < RD.reach) z.raid.raidTime += dt;     // inside the yard: wrecking it
+    } else if (z.pack && pd0 > RD.packRange) {
+      dx = z.pack.x + z.hx - z.x; dz = z.pack.z + z.hz - z.z; stop = 0.6; speed *= 0.35;
+    }
     const dist = Math.hypot(dx, dz) || 1;
     let ax = 0, az = 0;
-    if (dist > Z.stopDistance) { ax = dx / dist * z.speed; az = dz / dist * z.speed; }
+    if (dist > stop) { ax = dx / dist * speed; az = dz / dist * speed; }
     // Crowd spacing: push away from close neighbours
     let n = zombieGrid.query(z.x, z.z, nearBuf);
     for (let k = 0; k < n; k++) {
@@ -1640,7 +1664,7 @@ function zombieSystem(dt) {
       const o = G.obstacles[nearBuf[k]];
       if (o.r <= 0) continue;
       const ox = z.x - o.x, oz = z.z - o.z, min = o.r + Z.radius, d = Math.hypot(ox, oz);
-      if (d < min && d > 0.0001) { z.x = o.x + ox / d * min; z.z = o.z + oz / d * min; if (o.piece) blockedBy = o.piece; }
+      if (d < min && d > 0.0001) { z.x = o.x + ox / d * min; z.z = o.z + oz / d * min; if (o.piece) blockedBy = o.piece; if (o.fence) damageFence(o.fence, Z.wallDamage * dt); }
     }
     // Pressed against a wall: claw at it until it breaks
     if (blockedBy && G.day >= Z.wallDamageFromDay && !CONFIG.structures.wall.indestructible) damageWall(blockedBy, Z.wallDamage * dt);
@@ -2124,7 +2148,8 @@ function completePlot(pl) {
     site.level++;
     G.buildCount++;
     pop(site.pile, 1);
-    toast(`Camp level ${site.level + 1}: more scrap!`);
+    if (!site.fence) { buildFence(site); addYardGuard(site); toast(`Camp level ${site.level + 1}: a fence and a guard!`); }
+    else { setFence(site.fence, !site.overrun); toast(`Camp level ${site.level + 1}: more scrap!`); }
   } else if (def.type === 'workbench') {
     G.gunLevel++;
     G.buildCount++;
@@ -2228,6 +2253,11 @@ function spendMaterials(pl) {
 }
 // ---- Construction sites
 const BUILDERS = { name: 'Builders', icon: '🔨', builder: true, slots: CONFIG.build.construct.builderSlots, workers: 0 };
+const GUARDS = { name: 'Guards', icon: '🛡️', guard: true, slots: CONFIG.town.militia.guardSlots, workers: 0 };
+const militiaStats = (guard) => {
+  const M = CONFIG.town.militia, k = (1 + M.gunBonus * G.gunLevel) * (guard ? M.guardMul : 1);
+  return { fireRate: M.fireRate * k, damage: M.damage * k, range: M.range * (guard ? 1.15 : 1) };
+};
 function scaffold(x, z, size) {
   const g = new THREE.Group(), wood = flat(0xc98a4b), plank = flat(0x7a5230), h = size * 0.9;
   for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
@@ -2408,11 +2438,112 @@ function placeYard(def) {
   if (worker) { worker.post = [x + 1.8, z]; worker.state = 'walking'; worker.worker = true; }
   const el = makeBubble('', true);
   el.classList.add('site');
-  G.sites.push({ x, z, level: 0, stored: 0, cool: 0, plot: G.plots.find(o => o.def === def), pile, heap, el, textEl: el.firstChild, shown: '' });
+  G.sites.push({ x, z, level: 0, stored: 0, cool: 0, plot: G.plots.find(o => o.def === def), pile, heap, el, textEl: el.firstChild, shown: '',
+    raidTime: 0, hits: 0, overrun: false });
 }
+const nearestYard = (x, z) => {
+  let best = null, bd = Infinity;
+  for (const o of G.sites) { if (!o.plot || o.overrun) continue; const d = Math.hypot(o.x - x, o.z - z); if (d < bd) { bd = d; best = o; } }
+  return best;
+};
+function buildFence(site) {
+  const F = CONFIG.sites.fence, g = new THREE.Group(), mat = flat(F.color), tip = flat(0xe8b77a);
+  site.fence = { site, hp: 0, max: 0, group: g, obstacles: [], broken: false };
+  for (let i = 0; i < F.pieces; i++) {
+    const a = i / F.pieces * Math.PI * 2, x = site.x + Math.cos(a) * F.radius, z = site.z + Math.sin(a) * F.radius;
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.25, 1.1, 1.55), mat), cap = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.15, 1.6), tip);
+    post.position.set(x, 0.55, z); post.rotation.y = -a; cap.position.set(x, 1.15, z); cap.rotation.y = -a;
+    g.add(post, cap);
+    const o = { x, z, r: 0.85, zombieOnly: true, fence: site.fence };
+    site.fence.obstacles.push(o); G.obstacles.push(o);
+  }
+  scene.add(g); pop(g);
+  rebuildObstacleGrid();
+  setFence(site.fence, true);
+}
+function setFence(f, up) {
+  const F = CONFIG.sites.fence;
+  f.broken = !up; f.max = F.hp + F.hpPerLevel * (f.site.level - 1); f.hp = up ? f.max : 0;
+  f.group.visible = up;
+  for (const o of f.obstacles) o.r = up ? 0.85 : 0;
+}
+function damageFence(f, amount) {
+  if (f.broken) return;
+  f.hp -= amount;
+  if ((f.flash = (f.flash || 0) - amount) <= 0) { f.flash = 8; burst(f.site.x, 1, f.site.z, 3, 0xa8743f, 0.5); }
+  if (f.hp > 0) return;
+  setFence(f, false);
+  burst(f.site.x, 1.2, f.site.z, 20, 0xa8743f, 1.4);
+  toast('A Scrap Yard fence is broken!');
+}
+function addYardGuard(site) {
+  const GD = CONFIG.sites.guard, a = rand(0, Math.PI * 2);
+  const g = { site, x: site.x + Math.cos(a) * 1.6, z: site.z + Math.sin(a) * 1.6, angle: 0, moving: 0, target: null, cooldown: 0, aimDelay: 0, c: makeCharacter(GD.tint) };
+  G.yardGuards.push(g);
+}
+function yardSystem(dt) {
+  const GD = CONFIG.sites.guard;
+  for (const g of G.yardGuards) {
+    g.c.root.visible = !g.site.overrun;
+    if (!g.site.overrun) survivorShoot(g, GD.range, dt, GD);
+  }
+  // A Zombie Yard is taken back once its whole pack is dead
+  for (const site of G.sites) {
+    if (!site.overrun || !site.packed) continue;
+    if (G.zombies.some(z => z.alive && z.dying <= 0 && z.pack === site)) continue;
+    restoreYard(site);
+  }
+}
+function overrunYard(site) {
+  const RD = CONFIG.sites.raid;
+  site.overrun = true; site.hits = 0;
+  site.heap.material = flat(0x4a3b52);
+  site.el.classList.add('zyard');
+  if (site.fence && !site.fence.broken) setFence(site.fence, false);
+  spawnPack(site);
+  toast('☠️ Zombies took a Scrap Yard! Kill the pack and its boss to take it back', 3600, true);
+}
+function spawnPack(site) {
+  const RD = CONFIG.sites.raid, B = RD.boss;
+  for (let i = 0; i <= RD.pack; i++) {
+    const a = rand(0, Math.PI * 2), r = rand(1, 4), z = spawnZombie([site.x + Math.cos(a) * r, site.z + Math.sin(a) * r]);
+    if (!z) break;
+    z.pack = site; z.hx = Math.cos(a) * r; z.hz = Math.sin(a) * r;
+    if (i === 0) { z.boss = true; z.hp *= B.hp; z.scale *= B.scale; z.speed *= B.speed; z.color.setRGB(...B.color); }
+  }
+  site.packed = true;
+}
+function restoreYard(site) {
+  const RD = CONFIG.sites.raid;
+  site.overrun = false; site.packed = false; site.hits = 0;
+  site.heap.material = flat(CONFIG.colors.scrap);
+  site.el.classList.remove('zyard');
+  if (site.fence) setFence(site.fence, true);
+  G.scrap += RD.retakeReward; emit('scrapGained', RD.retakeReward);
+  burst(site.x, 2, site.z, 30, 0xffffff, 1.5);
+  toast(`Scrap Yard taken back! +${RD.retakeReward} scrap`, 3000, true);
+  Save.write();
+}
+// Dawn: score last night's raids, fix fences
+on('dayStart', () => {
+  const RD = CONFIG.sites.raid, F = CONFIG.sites.fence;
+  for (const site of G.sites) {
+    if (!site.plot || site.overrun) continue;
+    const hit = site.raidTime >= RD.hitSeconds;
+    site.raidTime = 0;
+    site.hits = hit ? site.hits + 1 : 0;
+    if (site.hits >= RD.overrunAfter) overrunYard(site);
+    else if (hit) setTimeout(() => toast('Zombies wrecked a Scrap Yard last night! Defend it tonight or it falls', 3200), 7500);
+    if (site.fence?.broken && !site.overrun) {
+      if (G.scrap >= F.repairCost) { G.scrap -= F.repairCost; emit('scrapSpent', F.repairCost); setFence(site.fence, true); }
+      else setTimeout(() => toast(`Need ${F.repairCost} scrap to fix a yard fence`), 9000);
+    }
+  }
+});
 function siteSystem(dt) {
   const S = CONFIG.sites, p = G.player;
   for (const site of G.sites) {
+    if (site.overrun) { site.stored = 0; continue; }
     const lvl = site.stats ? site.stats() : S.yardLevels[site.level];
     site.stored += lvl.rate * (site.mul || 1) / 60 * dt;
     if ((site.cool -= dt) > 0) continue;
@@ -2435,7 +2566,7 @@ function syncSites() {
     const k = 1 + site.paid * 0.4;
     site.heap.scale.set(0.9 * k, 0.9 * k, 0.9 * k);
     placeBubble(site.el, site.x, 3.4, site.z);
-    const text = site.slots ? (site.workers ? `${site.icon} +${rate}/min 👷${site.workers}` : `${site.icon} needs workers (T)`) : `${site.icon || '🏭'} +${rate}/min`;
+    const text = site.overrun ? '☠️ Zombie Yard' : site.slots ? (site.workers ? `${site.icon} +${rate}/min 👷${site.workers}` : `${site.icon} needs workers (T)`) : `${site.icon || '🏭'} +${rate}/min`;
     if (text !== site.shown) { site.shown = text; site.textEl.textContent = text; }
   }
 }
@@ -2498,7 +2629,7 @@ function spawnRefugees(n, home = false) {
     if (c.gun) { c.hand.remove(c.gun); c.gun = null; }     // refugees come unarmed
     const el = makeBubble('🙏 Refugee', true);
     el.classList.add('refugee');
-    const r = { x: f.x + f.ax * along, z: f.z + f.az * along, tx, tz, angle: 0, moving: 0, state: 'arriving', wait: 0, c, el };
+    const r = { x: f.x + f.ax * along, z: f.z + f.az * along, tx, tz, angle: 0, moving: 0, state: 'arriving', wait: 0, c, el, target: null, cooldown: 0, aimDelay: 0 };
     if (home) { r.x = tx; r.z = tz; r.state = 'home'; showEl(el, false); }
     G.refugees.push(r);
   }
@@ -2507,8 +2638,13 @@ function spawnRefugees(n, home = false) {
 }
 function refugeeSystem(dt) {
   const R = CONFIG.town.refugees;
+  const militia = G.built.bench && G.town;
   for (const r of G.refugees) {
     if (r.job?.builder) builderTarget(r);
+    // Armed: guards always, everyone else inside the walls at night (needs the Armory)
+    const guard = r.job === GUARDS, armed = militia && r.state === 'home' && (guard || (G.phase === 'night' && insideWalls(r.x, r.z)));
+    if (armed !== !!r.armed) { r.armed = armed; if (armed) setGunModel(r.c, 'gun'); else if (r.c.gun) { r.c.hand.remove(r.c.gun); r.c.gun = null; } }
+    if (armed) { const st = militiaStats(guard); if (survivorShoot(r, st.range, dt, st)) { r.moving = 0; continue; } }
     const dx = r.tx - r.x, dz = r.tz - r.z, d = Math.hypot(dx, dz);
     if (d < 0.3) {
       r.moving = 0;
@@ -2647,6 +2783,13 @@ function setJob(r, site) {
   if (r.job) r.job.workers--;
   r.job = site; r.consAt = undefined;
   if (site?.builder) site.workers++;
+  else if (site?.guard) {
+    // Guards take the first free post just inside a wall corner
+    const used = new Set(G.refugees.filter(o => o !== r && o.job === GUARDS).map(o => o.post));
+    r.post = [0, 1, 2, 3, 4, 5].find(k => !used.has(k)) ?? 0;
+    site.workers++;
+    [r.tx, r.tz] = hexCorner(r.post, CONFIG.structures.wall.ring / Math.cos(Math.PI / 6) - 3);
+  }
   else if (site) { site.workers++; r.tx = site.x + rand(-1.6, 1.6); r.tz = site.z + rand(1, 2); }
   else [r.tx, r.tz] = townSpot();
 }
@@ -2661,23 +2804,24 @@ function builderTarget(r) {
 function renderJobs() {
   const rows = jobsEl.querySelector('.rows'), idle = G.refugees.filter(r => !r.job), F = CONFIG.town.food;
   const eat = G.refugees.length * F.eatPerMin, farms = workSites().filter(o => o.res === 'food').reduce((n, o) => n + o.stats().rate, 0);
-  jobsEl.querySelector('.sub').textContent = `🙏 ${idle.length} idle (they work the Town Stash for scrap) · 🍖 ${Math.floor(G.res.food)} food, eating ${+eat.toFixed(1)}/min, farms +${+farms.toFixed(1)}/min${G.hungry ? ' · HUNGRY: half speed!' : ''}`;
+  jobsEl.querySelector('.sub').textContent = `🙏 ${idle.length} idle (they work the Town Stash for scrap${G.built.bench ? ' and grab guns at night' : ''}) · 🍖 ${Math.floor(G.res.food)} food, eating ${+eat.toFixed(1)}/min, farms +${+farms.toFixed(1)}/min${G.hungry ? ' · HUNGRY: half speed!' : ''}`;
   rows.innerHTML = '';
-  const sites = [BUILDERS, ...workSites()];
+  const sites = [BUILDERS, GUARDS, ...workSites()];
   for (const site of sites) {
     const row = document.createElement('div'), C = CONFIG.build.construct;
     row.className = 'job';
     const what = site.builder ? `Build ${Math.round((1 + site.workers * C.builderSpeed) * 100)}% speed · each +${C.builderSpeed * 100}%`
+      : site.guard ? (G.built.bench ? 'Shoot zombies from the wall corners, day and night' : 'Build the Armory first to arm them')
       : `+${+site.stats().rate.toFixed(1)} ${site.res}/min${site.bonus > 1 ? ` · x${site.bonus} area bonus` : ''}`;
     row.innerHTML = `<span class="ic">${site.icon}</span><span><b>${site.name}</b><small>${what}</small></span>
       <button aria-label="Fewer workers">−</button><span class="n">👷${site.workers}/${site.slots}</span><button aria-label="More workers">+</button>`;
     const [minus, plus] = row.querySelectorAll('button');
-    minus.disabled = !site.workers; plus.disabled = site.workers >= site.slots || !idle.length;
+    minus.disabled = !site.workers; plus.disabled = site.workers >= site.slots || !idle.length || (site.guard && !G.built.bench);
     minus.addEventListener('click', () => { setJob(G.refugees.find(r => r.job === site), null); renderJobs(); Save.write(); });
     plus.addEventListener('click', () => { const r = G.refugees.find(o => !o.job); if (r) setJob(r, site); renderJobs(); Save.write(); });
     rows.appendChild(row);
   }
-  if (sites.length === 1) rows.insertAdjacentHTML('beforeend', '<p class="sub">Renovate searched buildings along your roads to get more jobs.</p>');
+  if (sites.length === 2) rows.insertAdjacentHTML('beforeend', '<p class="sub">Renovate searched buildings along your roads to get more jobs.</p>');
 }
 function openJobs(on) {
   if (!window.__ready || !G.town) return;
@@ -2951,6 +3095,10 @@ function syncVisuals(dt) {
     if (Math.abs(r.x - p.x) < 40 && Math.abs(r.z - p.z) < 50) animateCharacter(r.c, r.moving, dt);
     if (r.state === 'arriving') placeBubble(r.el, r.x, 4.2, r.z);
   }
+  for (const g of G.yardGuards) {
+    g.c.root.position.set(g.x, 0, g.z); g.c.root.rotation.y = g.angle;
+    if (Math.abs(g.x - p.x) < 40 && Math.abs(g.z - p.z) < 50) animateCharacter(g.c, 0, dt);
+  }
   syncBuild(dt);
   syncWalls(dt);
   syncSites();
@@ -3072,7 +3220,8 @@ const Save = {
     const data = { v: 1, seed: G.seed, log: G.log, day: G.day, scrap: G.scrap + paid, upgrades: G.upgrades, shelterLevel: G.shelterLevel,
       hp: Math.ceil(G.player.hp), walls: G.wallPieces.map(pc => pc.alive ? Math.round(pc.hp) : 0),
       sites: G.sites.map(o => Math.floor(o.stored)), searched: G.houses.flatMap((h, i) => h.searched ? [i] : []),
-      refugees: G.refugees.length, bitten: !!G.bitten, res: G.res, jobs: G.sites.map(o => o.workers || 0), builders: BUILDERS.workers,
+      refugees: G.refugees.length, bitten: !!G.bitten, res: G.res, jobs: G.sites.map(o => o.workers || 0), builders: BUILDERS.workers, guards: GUARDS.workers,
+      yards: G.sites.map(o => o.plot ? [o.hits, o.overrun ? 1 : 0, o.fence?.broken ? 1 : 0] : 0),
       cons: Object.fromEntries(G.plots.filter(o => o.cons).map(o => [o.def.id, Math.ceil(o.cons.left)])) };
     try { localStorage.setItem(CONFIG.save.key, JSON.stringify(data)); } catch {}
   },
@@ -3112,6 +3261,14 @@ const Save = {
       }
     });
     for (let k = 0; k < (d.builders || 0); k++) { const r = G.refugees.find(o => !o.job); if (r) setJob(r, BUILDERS); }
+    for (let k = 0; k < (d.guards || 0); k++) { const r = G.refugees.find(o => !o.job); if (r) { setJob(r, GUARDS); r.x = r.tx; r.z = r.tz; } }
+    (d.yards || []).forEach((y, i) => {
+      const site = G.sites[i];
+      if (!y || !site) return;
+      site.hits = y[0];
+      if (y[1]) overrunYard(site);
+      else if (y[2] && site.fence) setFence(site.fence, false);
+    });
     for (const [id, left] of Object.entries(d.cons || {})) { const pl = G.plots.find(o => o.def.id === id); if (pl && !pl.done) startConstruction(pl, left); }
     showRes();
     if (G.shelterLevel) { G.player.x = door.x; G.player.z = door.z; }
@@ -3361,6 +3518,7 @@ function frameLoop(now) {
     refugeeSystem(CONFIG.sim.step);
     foodSystem(CONFIG.sim.step);
     siteSystem(CONFIG.sim.step);
+    yardSystem(CONFIG.sim.step);
     shopSystem();
     fxSystem(CONFIG.sim.step);
     saveSystem(CONFIG.sim.step);
