@@ -87,6 +87,10 @@
   .bubble.site.full { background: var(--yellow); animation: bob 1.2s ease-in-out infinite; }
   .bubble.door { color: #fff; background: var(--purple); text-shadow: 0 2px 0 rgba(30,42,74,.35); }
   .bubble .info { display: none; font-size: 12px; color: var(--ink); }
+  .bubble .need { font-size: 13px; font-weight: 700; color: var(--ink); white-space: nowrap; }
+  .bubble .need:empty { display: none; } .bubble .need .no { color: var(--red); }
+  .bubble.cons { background: #ffe9a8; } .bubble.cons .cost i.coin { display: none; }
+  .bubble.cons .bar b { background: linear-gradient(#7be0b0, #2fae6b); }
   .bubble.near .info:not(:empty) { display: block; }
   /* Far away a plot is just a small coin bubble; walk up to it to see what it is */
   .bubble.far { padding: 2px 9px 3px; border-radius: 999px; }
@@ -399,7 +403,11 @@ const CONFIG = {
     skyDay: 0x7ec8e3, skyNight: 0x23305a, sunDay: 2.2, sunNight: 0.5, hemiDay: 1.6, hemiNight: 0.75,
   },
   build: { drainRate: 30, startDelay: 0.25, plotSize: 3.4, popTime: 0.35, bubbleHeight: 2.2, upgradeOffset: 3.4,
-    nearRange: 4.5 },        // closer than this, a plot's bubble shows its full name and details
+    nearRange: 4.5,          // closer than this, a plot's bubble shows its full name and details
+    // Construction (once you're a town): paid-for buildings go up over time on a scaffold.
+    // times = seconds at 1x; each Builder refugee adds builderSpeed; standing on the site pours
+    // scrap in to rush it (1 scrap = rushSeconds). sites = how many can be built at once.
+    construct: { times: { hospital: 20, garage: 20, renovate: 15 }, builderSpeed: 0.5, builderSlots: 4, rushSeconds: 1, sites: 1 } },
   // Build plots. "requires" = only appears after that plot is built.
   plots: [
     { id: 'shelter', type: 'shelter',   label: 'Shelter',      x: -7.5, z: -6.5, cost: 3 },
@@ -424,6 +432,8 @@ const CONFIG = {
     // Town buildings: show up once all 6 walls are standing (the outpost becomes a town)
     { id: 'hospital', type: 'hospital', label: 'Hospital', x: -7.5, z: 6.5, cost: 30, requires: 'town', info: 'Heal 3x faster in town · +25% max HP' },
     { id: 'garage',   type: 'garage',   label: 'Garage',   x: 7.5,  z: 6.5, cost: 25, requires: 'town', info: 'Fixes every wall at dawn' },
+    // Town Hall: levels up the whole town (see town.hall)
+    { id: 'hall',     type: 'hall',     label: 'Town Hall', x: 0,    z: 8,   cost: 40, requires: 'town' },
     // One plot each upgrades every wall piece / every watchtower at once
     { id: 'wallUp',  type: 'wallUp',  label: 'Upgrade Walls',  x: -3.6, z: -11, cost: 30, requires: 'anyWall' },
     { id: 'towerUp', type: 'towerUp', label: 'Upgrade Towers', x: 3.6,  z: -11, cost: 25, requires: 'anyTower' },
@@ -444,18 +454,20 @@ const CONFIG = {
       hp: 60, radius: 0.95, repairPerPiece: 3,
       indestructible: true,              // for now zombies can't break the main walls (no repairs or wall upgrades needed)
       // Upgrades (Upgrade Walls plot): hp per piece, tint over the wood; repairs cost more per level
+      // spikes = damage per second to every zombie pressing on the wall. hall = Town Hall level needed.
       levels: [
-        { name: 'Wood',       hp: 60 },
-        { name: 'Reinforced', hp: 130, cost: 30, tint: 0xc9a27a },
-        { name: 'Iron',       hp: 240, cost: 75, tint: 0x9fb0d0 },
+        { name: 'Wood',  hp: 60 },
+        { name: 'Stone', hp: 130, cost: 40, wood: 30, stone: 30, hall: 3, time: 40, spikes: 4,  colors: [0x9a9aa6, 0xc8c8d2, 0x6a6a78] },
+        { name: 'Iron',  hp: 240, cost: 80, stone: 60, hall: 5, time: 60, spikes: 10, colors: [0x7d8fb0, 0xd0d8e8, 0x4a5068] },
       ],
+      spikeColor: 0xdfe4ee,
       stakeColor: 0xc98a4b, tipColor: 0xe8b77a, beamColor: 0x7a5230 },
     tower: { height: 3.4, radius: 1.2, range: 14,
       // Upgrades (Upgrade Towers plot): the guard on top shoots further, faster and harder
       levels: [
         { name: 'Watchtower',     range: 14, fireRate: 1.4, damage: 1,   roof: 0xd9553b },
-        { name: 'Sniper Nest',    range: 17, fireRate: 2,   damage: 1.6, roof: 0x2f8fff, cost: 25 },
-        { name: 'Fortress Tower', range: 21, fireRate: 2.8, damage: 2.4, roof: 0x8a5cff, cost: 65 },
+        { name: 'Sniper Nest',    range: 17, fireRate: 2,   damage: 1.6, roof: 0x2f8fff, cost: 25, wood: 20, time: 30 },
+        { name: 'Fortress Tower', range: 21, fireRate: 2.8, damage: 2.4, roof: 0x8a5cff, cost: 65, stone: 40, hall: 4, time: 45 },
       ] },
   },
   // Survivor camps around the map. Each camp has two people: one joins your squad and follows
@@ -467,6 +479,16 @@ const CONFIG = {
     refugees: { perDawn: [1, 3], gift: [5, 10], rate: 4, walkSpeed: 4.5, wanderPause: [2, 5],
       bedsPerShelter: 2, tints: [0xffe0a8, 0xc8e6ff, 0xffc8d8, 0xd8ffc8] },
     stash: { x: 0, z: 5, cap: 40 },         // rate = refugees * refugees.rate per minute, paid straight to you
+    // Town Hall: level 1 comes free with the town. Each level needs refugees (pop) and materials,
+    // adds beds, makes the Town Stash pay stashBonus more, and unlocks something.
+    hall: { x: 0, z: 11.5, model: 'houseB', tint: 0xffd76a, flag: 0xe0533c, scale: [3.2, 3.5, 3.8, 4.1, 4.4], stashBonus: 0.25,
+      levels: [
+        { name: 'Lv 1' },
+        { name: 'Lv 2', cost: 40,  wood: 20, pop: 3, beds: 2, time: 30, unlock: 'Build 2 things at once' },
+        { name: 'Lv 3', cost: 60,  wood: 40, stone: 20, pop: 5, beds: 2, time: 45, unlock: 'Stone walls with spikes' },
+        { name: 'Lv 4', cost: 90,  wood: 60, stone: 50, pop: 7, beds: 3, time: 60, unlock: 'Fortress Towers' },
+        { name: 'Lv 5', cost: 130, wood: 90, stone: 90, pop: 9, beds: 3, time: 90, unlock: 'Iron walls with big spikes' },
+      ] },
     // Roads: once you're a town, every Scrap Yard gets a "Build Road" plot. The road runs from the
     // walls to the yard with lamps and new houses along it: more beds, and the yard works faster.
     // Renovations: searched buildings in areas a road reaches get a "Renovate" plot.
@@ -589,6 +611,7 @@ const G = {
   wallLevel: 0, towerLevel: 0,        // index into structures.wall.levels / tower.levels
   extraBeds: 0,                       // beds added by roads out to the yards
   res: { wood: 0, stone: 0, food: 0 }, // town materials
+  hallLevel: 0,                       // Town Hall level (1 once you're a town)
   hungry: false,
   towers: [],                         // built watchtowers { x, z, guard }
   campSpots: [],                      // where survivor camps were placed
@@ -1621,6 +1644,13 @@ function zombieSystem(dt) {
     }
     // Pressed against a wall: claw at it until it breaks
     if (blockedBy && G.day >= Z.wallDamageFromDay && !CONFIG.structures.wall.indestructible) damageWall(blockedBy, Z.wallDamage * dt);
+    // Spiked walls hurt whoever claws at them
+    const spikes = blockedBy && CONFIG.structures.wall.levels[G.wallLevel].spikes;
+    if (spikes && z.dying <= 0) {
+      z.hp -= spikes * dt;
+      if ((z.spikeFlash = (z.spikeFlash || 0) - dt) <= 0) { z.spikeFlash = 0.5; z.flash = Z.hitFlash; }
+      if (z.hp <= 0) { z.dying = Z.deathTime; emit('zombieKilled', z); }
+    }
     // Never stand inside the player, so the crowd can't bury them
     const px = z.x - p.x, pz = z.z - p.z, pd = Math.hypot(px, pz);
     // Close enough to bite
@@ -1835,7 +1865,7 @@ function makeBubble(label, help) {
   const el = document.createElement('div');
   el.className = 'bubble' + (help ? ' help' : '');
   el.innerHTML = help ? `<div class="cost">${label}</div>`
-    : `<div class="label"></div><div class="info"></div><div class="cost"><i class="coin"></i><span></span></div><div class="bar"><b></b></div>`;
+    : `<div class="label"></div><div class="info"></div><div class="need"></div><div class="cost"><i class="coin"></i><span></span></div><div class="bar"><b></b></div>`;
   bubblesEl.appendChild(el);
   return el;
 }
@@ -1855,7 +1885,7 @@ function addPlot(def) {
 function buildPlots() {
   hexPlots();
   CONFIG.plots.forEach(addPlot);
-  G.plots.filter(pl => pl.def.type === 'wallUp' || pl.def.type === 'towerUp').forEach(setLevelPlot);
+  G.plots.filter(pl => pl.def.type === 'wallUp' || pl.def.type === 'towerUp' || pl.def.type === 'hall').forEach(setLevelPlot);
   refreshZonePlots();
 }
 
@@ -1907,6 +1937,11 @@ function buildWallRing() {
   wallGfx.mesh.setColorAt(0, new THREE.Color());
   wallGfx.mesh.frustumCulled = false;   // pieces move/grow at runtime, so the cached bounds would hide the ring once you walk away
   scene.add(wallGfx.mesh);
+  // Spikes: two stakes per piece pointing out of town, shown from the Stone level up
+  const spikeGeo = new THREE.ConeGeometry(0.12, 0.9, 4).rotateX(Math.PI / 2);
+  wallGfx.spikes = new THREE.InstancedMesh(spikeGeo, flat(W.spikeColor), per * 12);
+  wallGfx.spikes.frustumCulled = false;
+  scene.add(wallGfx.spikes);
   for (let side = 0; side < 6; side++) {
     const [ax, az] = hexCorner(side, corner), [bx, bz] = hexCorner(side + 1, corner);
     const rot = Math.atan2(-(bz - az), bx - ax);         // turn the piece's long axis along the side
@@ -1956,6 +1991,17 @@ function syncWalls(dt) {
     mesh.setColorAt(i, _c.setRGB(1, 0.45 + 0.55 * h, 0.45 + 0.55 * h).multiply(wallTint));
   });
   if (wallGfx.dirty || animating) { mesh.instanceMatrix.needsUpdate = true; mesh.instanceColor.needsUpdate = true; }
+  if (wallGfx.dirty) {
+    const on = !!W.levels[G.wallLevel].spikes, sp = wallGfx.spikes;
+    G.wallPieces.forEach((pc, i) => {
+      const d = Math.hypot(pc.x, pc.z), ux = pc.x / d, uz = pc.z / d, a = Math.atan2(ux, uz);
+      for (let k = 0; k < 2; k++) {
+        const along = (k - 0.5) * W.pieceLength * 0.5, x = pc.x + ux * 0.45 + uz * along, z = pc.z + uz * 0.45 - ux * along;
+        sp.setMatrixAt(i * 2 + k, _m.compose(_v.set(x, 0.55 + k * 0.35, z), _q.setFromEuler(_e.set(-0.35, a, 0)), _s.setScalar(on && pc.alive ? 1 : 0.0001)));
+      }
+    });
+    sp.instanceMatrix.needsUpdate = true;
+  }
   wallGfx.dirty = false;
 }
 const _c = new THREE.Color(), wallTint = new THREE.Color(1, 1, 1);
@@ -2063,7 +2109,7 @@ function toast(text, ms = 1800, big = false) {
 function completePlot(pl) {
   const def = pl.def, levels = CONFIG.gunLevels;
   if (!(def.type === 'wall' && G.built[def.id])) G.log.push('p:' + def.id);   // replayed on load (repairs aren't needed)
-  if (def.type === 'wallUp' || def.type === 'towerUp') { levelUp(pl); return; }
+  if (def.type === 'wallUp' || def.type === 'towerUp' || def.type === 'hall') { levelUp(pl); return; }
   if (!G.built[def.id]) {
     placeStructure(def);
     G.built[def.id] = true;
@@ -2104,31 +2150,122 @@ function completePlot(pl) {
   else { pl.done = true; pl.paid = 0; pl.pad.visible = false; showEl(pl.el, false); }
 }
 
-// Upgrade Walls / Upgrade Towers: raise every piece or tower one level, then offer the next one
+// Upgrade Walls / Upgrade Towers / Town Hall: raise everything one level, then offer the next one
+const levelInfo = (type) => type === 'wallUp' ? [CONFIG.structures.wall.levels, G.wallLevel]
+  : type === 'towerUp' ? [CONFIG.structures.tower.levels, G.towerLevel] : [CONFIG.town.hall.levels, Math.max(1, G.hallLevel) - 1];
 function levelUp(pl) {
-  const wall = pl.def.type === 'wallUp', S = CONFIG.structures, levels = wall ? S.wall.levels : S.tower.levels;
+  const type = pl.def.type, wall = type === 'wallUp', S = CONFIG.structures;
   G.buildCount++;
-  if (wall) {
+  if (type === 'hall') {
+    G.hallLevel++;
+    const L = CONFIG.town.hall.levels[G.hallLevel - 1];
+    G.extraBeds += L.beds || 0; townCount();
+    setHallModel();
+    toast(`Town Hall ${L.name}! ${L.unlock}`, 3000, true);
+  } else if (wall) {
     const before = wallMaxHp();
     G.wallLevel++;
     for (const pc of G.wallPieces) if (pc.alive) pc.hp += wallMaxHp() - before;
-    wallTint.setHex(levels[G.wallLevel].tint || 0xffffff);
+    // New material: rebuild the palisade in the level's colors (stakes, tips, beams)
+    const [stakeColor, tipColor, beamColor] = S.wall.levels[G.wallLevel].colors;
+    wallGfx.mesh.geometry.dispose();
+    wallGfx.mesh.geometry = palisadeGeometry({ ...S.wall, stakeColor, tipColor, beamColor });
     wallGfx.dirty = true;
+    toast(`Walls upgraded: ${S.wall.levels[G.wallLevel].name}! Spikes hurt zombies on them`);
   } else {
     G.towerLevel++;
     for (const t of G.towers) { t.mesh.userData.roof.material = flat(towerStats().roof); pop(t.mesh); }
+    toast(`Towers upgraded: ${towerStats().name}!`);
   }
-  toast(`${wall ? 'Walls' : 'Towers'} upgraded: ${levels[wall ? G.wallLevel : G.towerLevel].name}!`);
   emit('built', pl.def);
   setLevelPlot(pl);
 }
 function setLevelPlot(pl) {
-  const wall = pl.def.type === 'wallUp', S = CONFIG.structures, levels = wall ? S.wall.levels : S.tower.levels;
-  const lvl = wall ? G.wallLevel : G.towerLevel, next = levels[lvl + 1];
-  if (!next || (wall && S.wall.indestructible)) { pl.done = true; pl.paid = 0; pl.pad.visible = false; showEl(pl.el, false); return; }
-  pl.base = next.cost; pl.cost = price(next.cost); pl.paid = 0;
-  pl.label = `${wall ? 'Walls' : 'Towers'} → ${next.name}`;
-  pl.el.querySelector('.info').textContent = wall ? `${next.hp} HP per wall piece` : `Range ${next.range} · ${next.fireRate} shots/s`;
+  const type = pl.def.type, [levels, lvl] = levelInfo(type), next = levels[lvl + 1];
+  if (!next) { pl.done = true; pl.paid = 0; pl.pad.visible = false; showEl(pl.el, false); return; }
+  pl.base = next.cost; pl.cost = price(next.cost); pl.paid = 0; pl.req = next;
+  pl.label = type === 'wallUp' ? `Walls → ${next.name}` : type === 'towerUp' ? `Towers → ${next.name}` : `Town Hall → ${next.name}`;
+  pl.el.querySelector('.info').textContent = type === 'wallUp' ? `Spikes: ${next.spikes} damage/s to zombies on the wall`
+    : type === 'towerUp' ? `Range ${next.range} · ${next.fireRate} shots/s` : `+${next.beds} beds · unlocks: ${next.unlock}`;
+}
+// ---- Town Hall building: grows a bit with every level
+function setHallModel() {
+  const H = CONFIG.town.hall, k = H.scale[G.hallLevel - 1] ?? H.scale.at(-1);
+  if (!G.hallObj) {
+    const g = new THREE.Group(), m = tinted(MODELS[H.model].scene.clone(), H.tint);
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.45, 5), flat(0x5b6789));
+    const flag = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.1, 0.01), flat(H.flag));
+    pole.position.set(0, 1.05, 0); flag.position.set(0.08, 1.22, 0);
+    g.add(m, pole, flag);
+    g.position.set(H.x, 0.3, H.z); g.rotation.y = Math.atan2(-H.x, -H.z);
+    scene.add(g);
+    G.hallObj = g; G.hallObstacle = { x: H.x, z: H.z, r: 0 };
+    G.obstacles.push(G.hallObstacle);
+  }
+  pop(G.hallObj, k);
+  G.hallObstacle.r = 0.6 * k;
+  rebuildObstacleGrid();
+  if (!restoring) burst(H.x, 3, H.z, 24, 0xffd76a, 1.4);
+}
+// ---- What a plot still needs before you can pay (materials, Town Hall level, refugees, a free builder)
+const buildTime = (pl) => G.town ? (pl.req?.time ?? CONFIG.build.construct.times[pl.def.type] ?? 0) : 0;
+const consSlots = () => CONFIG.build.construct.sites + (G.hallLevel >= 2 ? 1 : 0);
+function plotNeeds(pl) {
+  const r = pl.req || {}, out = [];
+  let blocked = false;
+  if (r.hall && G.hallLevel < r.hall) return { html: `🏛️ Needs Town Hall Lv ${r.hall}`, blocked: true };
+  if (r.pop && G.refugees.length < r.pop) return { html: `🙏 Needs ${r.pop} refugees (${G.refugees.length})`, blocked: true };
+  for (const [k, ic] of [['wood', '🪵'], ['stone', '🪨']]) {
+    if (!r[k]) continue;
+    const no = G.res[k] < r[k]; blocked ||= no;
+    out.push(`<span class="${no ? 'no' : ''}">${ic} ${r[k]}</span>`);
+  }
+  if (!blocked && buildTime(pl) && G.plots.filter(o => o.cons).length >= consSlots()) return { html: '🔨 Builders busy', blocked: true };
+  return { html: out.join(' '), blocked };
+}
+function spendMaterials(pl) {
+  for (const k of ['wood', 'stone']) if (pl.req?.[k]) G.res[k] -= pl.req[k];
+}
+// ---- Construction sites
+const BUILDERS = { name: 'Builders', icon: '🔨', builder: true, slots: CONFIG.build.construct.builderSlots, workers: 0 };
+function scaffold(x, z, size) {
+  const g = new THREE.Group(), wood = flat(0xc98a4b), plank = flat(0x7a5230), h = size * 0.9;
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, h, 5), wood);
+    pole.position.set(sx * size / 2, h / 2, sz * size / 2); g.add(pole);
+  }
+  for (const y of [h * 0.35, h * 0.75]) for (const [w, d, ox, oz] of [[size, 0.15, 0, -size / 2], [size, 0.15, 0, size / 2], [0.15, size, -size / 2, 0], [0.15, size, size / 2, 0]]) {
+    const b = new THREE.Mesh(new THREE.BoxGeometry(w, 0.15, d), plank);
+    b.position.set(ox, y, oz); g.add(b);
+  }
+  g.position.set(x, 0, z);
+  scene.add(g); pop(g);
+  return g;
+}
+function startConstruction(pl, left) {
+  const total = buildTime(pl), def = pl.def, h = def.type === 'renovate' ? G.houses[def.house] : null;
+  // Where the building goes up: the house being renovated, the Town Hall, or the plot itself
+  const [x, z, size] = h ? [h.mx, h.mz, 6] : def.type === 'hall' ? [CONFIG.town.hall.x, CONFIG.town.hall.z, 5]
+    : def.type === 'wallUp' || def.type === 'towerUp' ? [pl.x, pl.z, 2.6] : [def.x, def.z, 5];
+  pl.cons = { left: left ?? total, total, mesh: scaffold(x, z, size), x, z, dust: 0 };
+  pl.paid = pl.cost;
+  if (!restoring) { toast(`Construction started: ${pl.label}`); Save.write(); }
+}
+function constructionTick(pl, on, dt) {
+  const C = CONFIG.build.construct, c = pl.cons;
+  c.left -= (1 + BUILDERS.workers * C.builderSpeed) * dt;
+  // Standing on the site rushes it with scrap
+  if (on && G.scrap > 0) {
+    pl.drain += CONFIG.build.drainRate * dt;
+    const n = Math.min(Math.floor(pl.drain), G.scrap, Math.ceil(c.left / C.rushSeconds));
+    if (n > 0) { G.scrap -= n; pl.drain -= n; c.left -= n * C.rushSeconds; emit('scrapSpent', n); }
+  } else pl.drain = 0;
+  if ((c.dust -= dt) <= 0) { c.dust = 0.8; burst(c.x + rand(-1, 1), 1, c.z + rand(-1, 1), 4, 0xd9c7a0, 0.6); }
+  if (c.left > 0) return;
+  scene.remove(c.mesh);
+  pl.cons = null;
+  completePlot(pl);
+  Save.write();
 }
 on('built', (def) => {
   if (def.type === 'wall') G.built.anyWall = true;
@@ -2141,15 +2278,20 @@ function buildSystem(dt) {
     if (active && !pl.active) { pl.pad.visible = true; pop(pl.pad, B.plotSize); }
     pl.active = active;
     if (!active) continue;
-    if (pl.base && pl.paid === 0) pl.cost = price(pl.base);   // price is locked once you start paying
+    if (pl.base && pl.paid === 0 && !pl.cons) pl.cost = price(pl.base);   // price is locked once you start paying
     const on = Math.abs(p.x - pl.x) < half && Math.abs(p.z - pl.z) < half;
     pl.onTime = on ? pl.onTime + dt : 0;
-    if (!on || pl.onTime < B.startDelay || G.scrap <= 0) { pl.drain = 0; continue; }
+    if (pl.cons) { constructionTick(pl, on && pl.onTime >= B.startDelay, dt); continue; }
+    pl.need = plotNeeds(pl);
+    if (!on || pl.onTime < B.startDelay || G.scrap <= 0 || pl.need.blocked) { pl.drain = 0; continue; }
     // Pour scrap in at a steady rate, whole pieces only
     pl.drain += B.drainRate * dt;
     const n = Math.min(Math.floor(pl.drain), G.scrap, pl.cost - pl.paid);
     if (n > 0) { G.scrap -= n; pl.paid += n; pl.drain -= n; emit('scrapSpent', n); }
-    if (pl.paid >= pl.cost) completePlot(pl);
+    if (pl.paid >= pl.cost) {
+      spendMaterials(pl);
+      if (buildTime(pl)) startConstruction(pl); else completePlot(pl);
+    }
   }
 }
 
@@ -2316,6 +2458,7 @@ function startTown() {
   setTimeout(() => spawnRefugees(1), 2500);            // the first one shows up right away
 }
 function finishTown() {
+  if (!G.hallLevel) { G.hallLevel = 1; setHallModel(); }
   townChipEl.style.display = ''; townCount();
   G.sites.filter(o => o.plot).forEach(addRoadPlot);   // yards you already have can be reached by road
   // Town Stash: refugees' work piles up here, collect it like a Scrap Yard
@@ -2330,7 +2473,7 @@ function finishTown() {
   const el = makeBubble('', true);
   el.classList.add('site');
   G.sites.push({ x: T.stash.x, z: T.stash.z, stored: 0, cool: 0, pile, heap, el, textEl: el.firstChild, shown: '', icon: '🏘️',
-    stats: () => ({ rate: G.refugees.filter(r => r.state === 'home' && !r.job).length * T.refugees.rate, cap: T.stash.cap }) });
+    stats: () => ({ rate: G.refugees.filter(r => r.state === 'home' && !r.job).length * T.refugees.rate * (1 + T.hall.stashBonus * (G.hallLevel - 1)), cap: T.stash.cap }) });
 }
 on('built', (def) => {
   if (def.type === 'wall' && CONFIG.plots.every(d => d.type !== 'wall' || G.built[d.id])) startTown();
@@ -2365,6 +2508,7 @@ function spawnRefugees(n, home = false) {
 function refugeeSystem(dt) {
   const R = CONFIG.town.refugees;
   for (const r of G.refugees) {
+    if (r.job?.builder) builderTarget(r);
     const dx = r.tx - r.x, dz = r.tz - r.z, d = Math.hypot(dx, dz);
     if (d < 0.3) {
       r.moving = 0;
@@ -2501,21 +2645,31 @@ function buildRenovation(i, kind) {
 const workSites = () => G.sites.filter(o => o.slots);
 function setJob(r, site) {
   if (r.job) r.job.workers--;
-  r.job = site;
-  if (site) { site.workers++; r.tx = site.x + rand(-1.6, 1.6); r.tz = site.z + rand(1, 2); }
+  r.job = site; r.consAt = undefined;
+  if (site?.builder) site.workers++;
+  else if (site) { site.workers++; r.tx = site.x + rand(-1.6, 1.6); r.tz = site.z + rand(1, 2); }
   else [r.tx, r.tz] = townSpot();
+}
+// Builders walk to whatever is being built (or wait by the Town Hall)
+function builderTarget(r) {
+  const c = G.plots.find(o => o.cons)?.cons || null;
+  if (r.consAt === c) return;
+  r.consAt = c;
+  const H = CONFIG.town.hall, [x, z] = c ? [c.x, c.z] : [H.x, H.z - 3.5], a = rand(0, Math.PI * 2);
+  r.tx = x + Math.cos(a) * (c ? 3 : 1.5); r.tz = z + Math.sin(a) * (c ? 3 : 1.5);
 }
 function renderJobs() {
   const rows = jobsEl.querySelector('.rows'), idle = G.refugees.filter(r => !r.job), F = CONFIG.town.food;
   const eat = G.refugees.length * F.eatPerMin, farms = workSites().filter(o => o.res === 'food').reduce((n, o) => n + o.stats().rate, 0);
   jobsEl.querySelector('.sub').textContent = `🙏 ${idle.length} idle (they work the Town Stash for scrap) · 🍖 ${Math.floor(G.res.food)} food, eating ${+eat.toFixed(1)}/min, farms +${+farms.toFixed(1)}/min${G.hungry ? ' · HUNGRY: half speed!' : ''}`;
   rows.innerHTML = '';
-  const sites = workSites();
-  if (!sites.length) rows.innerHTML = '<p class="sub">No buildings to work yet. Build a road to a Scrap Yard, then renovate searched buildings along it.</p>';
+  const sites = [BUILDERS, ...workSites()];
   for (const site of sites) {
-    const row = document.createElement('div'), K = CONFIG.town.jobs.kinds[site.kind];
+    const row = document.createElement('div'), C = CONFIG.build.construct;
     row.className = 'job';
-    row.innerHTML = `<span class="ic">${site.icon}</span><span><b>${site.name}</b><small>+${+site.stats().rate.toFixed(1)} ${site.res}/min${site.bonus > 1 ? ` · x${site.bonus} area bonus` : ''}</small></span>
+    const what = site.builder ? `Build ${Math.round((1 + site.workers * C.builderSpeed) * 100)}% speed · each +${C.builderSpeed * 100}%`
+      : `+${+site.stats().rate.toFixed(1)} ${site.res}/min${site.bonus > 1 ? ` · x${site.bonus} area bonus` : ''}`;
+    row.innerHTML = `<span class="ic">${site.icon}</span><span><b>${site.name}</b><small>${what}</small></span>
       <button aria-label="Fewer workers">−</button><span class="n">👷${site.workers}/${site.slots}</span><button aria-label="More workers">+</button>`;
     const [minus, plus] = row.querySelectorAll('button');
     minus.disabled = !site.workers; plus.disabled = site.workers >= site.slots || !idle.length;
@@ -2523,6 +2677,7 @@ function renderJobs() {
     plus.addEventListener('click', () => { const r = G.refugees.find(o => !o.job); if (r) setJob(r, site); renderJobs(); Save.write(); });
     rows.appendChild(row);
   }
+  if (sites.length === 1) rows.insertAdjacentHTML('beforeend', '<p class="sub">Renovate searched buildings along your roads to get more jobs.</p>');
 }
 function openJobs(on) {
   if (!window.__ready || !G.town) return;
@@ -2722,14 +2877,18 @@ function syncBuild(dt) {
     placeBubble(pl.el, pl.x, CONFIG.build.bubbleHeight, pl.z);
     const near = Math.hypot(G.player.x - pl.x, G.player.z - pl.z) < CONFIG.build.nearRange;
     if (near !== pl.near) { pl.near = near; pl.el.classList.toggle('near', near); pl.el.classList.toggle('far', !near); }
-    const left = pl.cost - pl.paid, key = pl.label + left;
+    const c = pl.cons, left = pl.cost - pl.paid, need = c ? '' : pl.need?.html || '';
+    const key = c ? 'c' + pl.label + Math.ceil(c.left) : pl.label + left + need;
     if (key !== pl.shown) {           // touch the DOM only when something changed
       pl.shown = key;
-      pl.labelEl.textContent = pl.label;
-      pl.costEl.textContent = left;
-      pl.barEl.style.width = (pl.paid / pl.cost * 100) + '%';
+      pl.labelEl.textContent = c ? `🔨 Building: ${pl.label}` : pl.label;
+      pl.costEl.textContent = c ? `⏱ ${Math.floor(Math.ceil(c.left) / 60)}:${String(Math.ceil(c.left) % 60).padStart(2, '0')}` : left;
+      pl.barEl.style.width = (c ? (1 - c.left / c.total) : pl.paid / pl.cost) * 100 + '%';
+      if (!pl.needEl) pl.needEl = pl.el.querySelector('.need');
+      pl.needEl.innerHTML = need;
+      pl.el.classList.toggle('cons', !!c);
     }
-    pl.el.classList.toggle('poor', G.scrap === 0 && left > 0);
+    pl.el.classList.toggle('poor', !c && G.scrap === 0 && left > 0);
   }
   for (const sv of G.survivors) if (sv.state === 'waiting') placeBubble(sv.el, sv.x, 4.2, sv.z);
   if (door.el) { if (door.open) showEl(door.el, false); else placeBubble(door.el, door.x, CONFIG.build.bubbleHeight, door.z); }
@@ -2909,11 +3068,12 @@ const Save = {
   write() {
     if (!G.seed || restoring || !window.__ready) return;   // nothing to keep until PLAY is pressed
     // Scrap poured into unfinished plots comes back on load
-    const paid = G.plots.reduce((n, pl) => n + (pl.done ? 0 : pl.paid), 0);
+    const paid = G.plots.reduce((n, pl) => n + (pl.done || pl.cons ? 0 : pl.paid), 0);
     const data = { v: 1, seed: G.seed, log: G.log, day: G.day, scrap: G.scrap + paid, upgrades: G.upgrades, shelterLevel: G.shelterLevel,
       hp: Math.ceil(G.player.hp), walls: G.wallPieces.map(pc => pc.alive ? Math.round(pc.hp) : 0),
       sites: G.sites.map(o => Math.floor(o.stored)), searched: G.houses.flatMap((h, i) => h.searched ? [i] : []),
-      refugees: G.refugees.length, bitten: !!G.bitten, res: G.res, jobs: G.sites.map(o => o.workers || 0) };
+      refugees: G.refugees.length, bitten: !!G.bitten, res: G.res, jobs: G.sites.map(o => o.workers || 0), builders: BUILDERS.workers,
+      cons: Object.fromEntries(G.plots.filter(o => o.cons).map(o => [o.def.id, Math.ceil(o.cons.left)])) };
     try { localStorage.setItem(CONFIG.save.key, JSON.stringify(data)); } catch {}
   },
   // Rebuild everything a save describes on the freshly generated (same seed) map
@@ -2951,6 +3111,8 @@ const Save = {
         if (r) { setJob(r, site); r.x = r.tx; r.z = r.tz; }
       }
     });
+    for (let k = 0; k < (d.builders || 0); k++) { const r = G.refugees.find(o => !o.job); if (r) setJob(r, BUILDERS); }
+    for (const [id, left] of Object.entries(d.cons || {})) { const pl = G.plots.find(o => o.def.id === id); if (pl && !pl.done) startConstruction(pl, left); }
     showRes();
     if (G.shelterLevel) { G.player.x = door.x; G.player.z = door.z; }
     // Everyone who was walking somewhere is already there
