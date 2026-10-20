@@ -139,6 +139,7 @@
   #townChip { pointer-events: auto; cursor: pointer; }
   #resRow { display: flex; gap: 6px; flex-wrap: wrap; }
   #resRow .chip { display: none; } #resRow .chip.seen { display: inline-flex; }
+  .chip .dot.fuel { background: #ffb38a; } .opt:disabled { opacity: .5; cursor: default; }
   .chip .dot.wood { background: #e0b98a; } .chip .dot.stone { background: #c9ccd6; } .chip .dot.food { background: #b6e38a; }
   #foodChip.hungry span { color: var(--red); } #foodChip.hungry { animation: bump .5s ease-in-out infinite; }
   #missionChip { pointer-events: auto; cursor: pointer; max-width: min(320px, 70vw); }
@@ -265,6 +266,7 @@
         <div class="chip small" id="woodChip"><i class="dot wood">🪵</i><span>0</span></div>
         <div class="chip small" id="stoneChip"><i class="dot stone">🪨</i><span>0</span></div>
         <div class="chip small" id="foodChip"><i class="dot food">🍖</i><span>0</span></div>
+        <div class="chip small" id="fuelChip"><i class="dot fuel">⛽</i><span>0</span></div>
       </div>
     </div>
     <div id="dayInfo"><span class="sun"></span><span class="ct"><small></small><b></b></span></div>
@@ -497,7 +499,7 @@ const CONFIG = {
         { name: 'Lv 1' },
         { name: 'Lv 2', cost: 40,  wood: 20, pop: 3, beds: 2, time: 30, unlock: 'Build 2 things at once' },
         { name: 'Lv 3', cost: 60,  wood: 40, stone: 20, pop: 5, beds: 2, time: 45, unlock: 'Stone walls with spikes' },
-        { name: 'Lv 4', cost: 90,  wood: 60, stone: 50, pop: 7, beds: 3, time: 60, unlock: 'Fortress Towers' },
+        { name: 'Lv 4', cost: 90,  wood: 60, stone: 50, pop: 7, beds: 3, time: 60, unlock: 'Fortress Towers, Fuel Depots and the Driver', fuel: 10 },
         { name: 'Lv 5', cost: 130, wood: 90, stone: 90, pop: 9, beds: 3, time: 90, unlock: 'Iron walls with big spikes' },
       ] },
     // Roads: once you're a town, every Scrap Yard gets a "Build Road" plot. The road runs from the
@@ -514,6 +516,7 @@ const CONFIG = {
         mill:     { name: 'Lumber Mill', icon: '🪵', res: 'wood',  rate: 5, bonus: ['forest'], where: 'forest', tint: 0xe0b98a, heap: 0x9a6a3a },
         quarry:   { name: 'Quarry',      icon: '🪨', res: 'stone', rate: 4, bonus: ['hills', 'nearMountain'], where: 'hills or by mountains', tint: 0xd0d2dc, heap: 0x9aa0aa },
         farm:     { name: 'Farm',        icon: '🍖', res: 'food',  rate: 6, bonus: ['meadow', 'lake'], where: 'meadows and lakes', tint: 0xc8f0a0, heap: 0x7bc043 },
+        depot:    { name: 'Fuel Depot',  icon: '⛽', res: 'fuel',  rate: 3, bonus: ['dock', 'rail', 'city'], where: 'the dockyard, rail station or city', tint: 0xffc8a0, heap: 0xe0533c, hall: 4 },
         bunk:     { name: 'Bunkhouse',   icon: '🛏️', beds: 2, tint: 0xc8e6ff },
       },
     },
@@ -521,6 +524,9 @@ const CONFIG = {
     // Guards (a job) stand at the wall corners and shoot day and night, a bit better.
     // Every Armory gun level makes them gunBonus stronger.
     militia: { range: 11, fireRate: 0.9, damage: 0.7, guardMul: 1.4, gunBonus: 0.15, guardSlots: 6 },
+    // Driver: needs the Garage and Town Hall Lv 4. Every dawn the truck drives to the cheapest
+    // locked area next to yours, explores it for exploreTime seconds and unlocks it for free (costs fuel).
+    driver: { hall: 4, fuel: 5, speed: 9, exploreTime: 25, color: 0x2f8fff },
     // Every refugee eats; with no food, workers work at half speed
     food: { start: 30, eatPerMin: 0.5 },
     roads: { cost: 20, outputMul: 1.5, beds: 2, houses: 2, houseScale: 4.5, houseTint: 0xffe2c4, lampEvery: 7, width: 3.2 },
@@ -593,6 +599,7 @@ const CONFIG = {
     { id: 'retake',   text: 'Take back a Zombie Yard',      check: 'retakes',   n: 1,   reward: { scrap: 50 } },
     { id: 'hall5',    text: 'Town Hall to level 5',         check: 'hall',      n: 5,   reward: { scrap: 100, refugee: 1 } },
     { id: 'iron',     text: 'Upgrade to Iron walls',        check: 'wallLevel', n: 2,   reward: { scrap: 100 } },
+    { id: 'driver',   text: 'Send out a Driver',            check: 'driver',    n: 1,   reward: { fuel: 10 } },
     { id: 'kill500',  text: 'Kill 500 zombies',             check: 'kills',     n: 500, reward: { scrap: 150 } },
     { id: 'day20',    text: 'Survive until day 20',         check: 'day',       n: 20,  reward: { scrap: 200 } },
   ] },
@@ -661,7 +668,8 @@ const G = {
   wallPieces: [],                     // { side, x, z, rot, hp, alive, obstacle }
   wallLevel: 0, towerLevel: 0,        // index into structures.wall.levels / tower.levels
   extraBeds: 0,                       // beds added by roads out to the yards
-  res: { wood: 0, stone: 0, food: 0 }, // town materials
+  res: { wood: 0, stone: 0, food: 0, fuel: 0 }, // town materials
+  truck: null,                        // the Driver's truck out on a trip
   hallLevel: 0,                       // Town Hall level (1 once you're a town)
   yardGuards: [],                     // armed guards at level 2+ Scrap Yards
   kills: 0, retakes: 0,               // counted for missions
@@ -2226,6 +2234,7 @@ function levelUp(pl) {
     G.hallLevel++;
     const L = CONFIG.town.hall.levels[G.hallLevel - 1];
     G.extraBeds += L.beds || 0; townCount();
+    if (L.fuel && !restoring) G.res.fuel += L.fuel;
     setHallModel();
     toast(`Town Hall ${L.name}! ${L.unlock}`, 3000, true);
   } else if (wall) {
@@ -2295,6 +2304,8 @@ function spendMaterials(pl) {
 // ---- Construction sites
 const BUILDERS = { name: 'Builders', icon: '🔨', builder: true, slots: CONFIG.build.construct.builderSlots, workers: 0 };
 const GUARDS = { name: 'Guards', icon: '🛡️', guard: true, slots: CONFIG.town.militia.guardSlots, workers: 0 };
+const DRIVER = { name: 'Driver', icon: '🚚', driver: true, slots: 1, workers: 0 };
+const driverReady = () => G.built.garage && G.hallLevel >= CONFIG.town.driver.hall;
 const militiaStats = (guard) => {
   const M = CONFIG.town.militia, k = (1 + M.gunBonus * G.gunLevel) * (guard ? M.guardMul : 1);
   return { fireRate: M.fireRate * k, damage: M.damage * k, range: M.range * (guard ? 1.15 : 1) };
@@ -2682,6 +2693,8 @@ function refugeeSystem(dt) {
   const militia = G.built.bench && G.town;
   for (const r of G.refugees) {
     if (r.job?.builder) builderTarget(r);
+    r.c.root.visible = !(r.job === DRIVER && G.truck);
+    if (r.job === DRIVER && G.truck) { r.x = G.truck.x; r.z = G.truck.z; r.moving = 0; continue; }
     // Armed: guards always, everyone else inside the walls at night (needs the Armory)
     const guard = r.job === GUARDS, armed = militia && r.state === 'home' && (guard || (G.phase === 'night' && insideWalls(r.x, r.z)));
     if (armed !== !!r.armed) { r.armed = armed; if (armed) setGunModel(r.c, 'gun'); else if (r.c.gun) { r.c.hand.remove(r.c.gun); r.c.gun = null; } }
@@ -2783,7 +2796,8 @@ function renovate(def) {
   for (const [kind, K] of Object.entries(J.kinds)) {
     const bonus = hasBonus(h.zone, kind), b = document.createElement('button');
     b.className = 'opt';
-    b.innerHTML = `<span class="ic">${K.icon}</span><span><b>${K.name}</b><small>${K.beds ? `+${K.beds} refugee beds` : `+${K.rate * (bonus ? J.bonusMul : 1)} ${K.res}/min per worker · best in ${K.where}`}</small></span>${bonus ? `<span class="tag">x${J.bonusMul} here</span>` : '<span></span>'}`;
+    if (K.hall && G.hallLevel < K.hall) { b.disabled = true; }
+    b.innerHTML = `<span class="ic">${K.icon}</span><span><b>${K.name}</b><small>${K.hall && G.hallLevel < K.hall ? `Needs Town Hall Lv ${K.hall}` : K.beds ? `+${K.beds} refugee beds` : `+${K.rate * (bonus ? J.bonusMul : 1)} ${K.res}/min per worker · best in ${K.where}`}</small></span>${bonus ? `<span class="tag">x${J.bonusMul} here</span>` : '<span></span>'}`;
     b.addEventListener('click', () => {
       choiceEl.classList.remove('open'); setPaused('choice', false);
       G.log.push(`r:${def.house}:${kind}`);
@@ -2824,6 +2838,7 @@ function setJob(r, site) {
   if (r.job) r.job.workers--;
   r.job = site; r.consAt = undefined;
   if (site?.builder) site.workers++;
+  else if (site?.driver) { site.workers++; const g = CONFIG.plots.find(d => d.id === 'garage'); r.tx = g.x * 0.75; r.tz = g.z * 0.75; }
   else if (site?.guard) {
     // Guards take the first free post just inside a wall corner
     const used = new Set(G.refugees.filter(o => o !== r && o.job === GUARDS).map(o => o.post));
@@ -2847,22 +2862,23 @@ function renderJobs() {
   const eat = G.refugees.length * F.eatPerMin, farms = workSites().filter(o => o.res === 'food').reduce((n, o) => n + o.stats().rate, 0);
   jobsEl.querySelector('.sub').textContent = `🙏 ${idle.length} idle (they work the Town Stash for scrap${G.built.bench ? ' and grab guns at night' : ''}) · 🍖 ${Math.floor(G.res.food)} food, eating ${+eat.toFixed(1)}/min, farms +${+farms.toFixed(1)}/min${G.hungry ? ' · HUNGRY: half speed!' : ''}`;
   rows.innerHTML = '';
-  const sites = [BUILDERS, GUARDS, ...workSites()];
+  const sites = [BUILDERS, GUARDS, DRIVER, ...workSites()];
   for (const site of sites) {
     const row = document.createElement('div'), C = CONFIG.build.construct;
     row.className = 'job';
     const what = site.builder ? `Build ${Math.round((1 + site.workers * C.builderSpeed) * 100)}% speed · each +${C.builderSpeed * 100}%`
       : site.guard ? (G.built.bench ? 'Shoot zombies from the wall corners, day and night' : 'Build the Armory first to arm them')
+      : site.driver ? (driverReady() ? `Unlocks a new area every day for ${CONFIG.town.driver.fuel} ⛽` : `Needs the Garage and Town Hall Lv ${CONFIG.town.driver.hall}`)
       : `+${+site.stats().rate.toFixed(1)} ${site.res}/min${site.bonus > 1 ? ` · x${site.bonus} area bonus` : ''}`;
     row.innerHTML = `<span class="ic">${site.icon}</span><span><b>${site.name}</b><small>${what}</small></span>
       <button aria-label="Fewer workers">−</button><span class="n">👷${site.workers}/${site.slots}</span><button aria-label="More workers">+</button>`;
     const [minus, plus] = row.querySelectorAll('button');
-    minus.disabled = !site.workers; plus.disabled = site.workers >= site.slots || !idle.length || (site.guard && !G.built.bench);
+    minus.disabled = !site.workers; plus.disabled = site.workers >= site.slots || !idle.length || (site.guard && !G.built.bench) || (site.driver && !driverReady());
     minus.addEventListener('click', () => { setJob(G.refugees.find(r => r.job === site), null); renderJobs(); Save.write(); });
     plus.addEventListener('click', () => { const r = G.refugees.find(o => !o.job); if (r) setJob(r, site); renderJobs(); Save.write(); });
     rows.appendChild(row);
   }
-  if (sites.length === 2) rows.insertAdjacentHTML('beforeend', '<p class="sub">Renovate searched buildings along your roads to get more jobs.</p>');
+  if (sites.length === 3) rows.insertAdjacentHTML('beforeend', '<p class="sub">Renovate searched buildings along your roads to get more jobs.</p>');
 }
 function openJobs(on) {
   if (!window.__ready || !G.town) return;
@@ -2872,8 +2888,56 @@ function openJobs(on) {
 document.getElementById('townChip').addEventListener('pointerdown', (e) => { e.stopPropagation(); openJobs(true); });
 jobsEl.querySelector('.close').addEventListener('click', () => openJobs(false));
 addEventListener('keydown', (e) => { if (e.code === 'KeyT' && !e.repeat) openJobs(!jobsEl.classList.contains('open')); });
+// ---- Driver: a truck trip each dawn that unlocks the cheapest locked area next to yours
+function makeTruck() {
+  const g = new THREE.Group(), body = flat(CONFIG.town.driver.color), dark = flat(0x2a2f45), glass = flat(0xbfe6ff);
+  const add = (geo, mat, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); g.add(m); };
+  add(new THREE.BoxGeometry(1.7, 0.9, 2.4), body, 0, 0.85, -0.5);     // cargo bed
+  add(new THREE.BoxGeometry(1.7, 1.1, 1.2), body, 0, 0.95, 1.3);      // cab
+  add(new THREE.BoxGeometry(1.5, 0.45, 0.05), glass, 0, 1.2, 1.92);   // windshield
+  for (const [x, z] of [[-0.85, 1.2], [0.85, 1.2], [-0.85, -1.1], [0.85, -1.1]])
+    add(new THREE.CylinderGeometry(0.38, 0.38, 0.3, 10).rotateZ(Math.PI / 2), dark, x, 0.38, z);
+  g.add(blobShadow(3.2));
+  scene.add(g); pop(g);
+  return g;
+}
+function startTrip() {
+  const D = CONFIG.town.driver;
+  if (!DRIVER.workers || !driverReady() || G.truck) return;
+  const target = G.plots.filter(o => o.def.type === 'zone' && o.active && !o.done).sort((a, b) => a.cost - b.cost)[0];
+  if (!target) return;
+  if (G.res.fuel < D.fuel) { setTimeout(() => toast(`The Driver needs ${D.fuel} ⛽ fuel: build a Fuel Depot`), 4200); return; }
+  const g = CONFIG.plots.find(d => d.id === 'garage');
+  G.truck = { mesh: makeTruck(), x: g.x, z: g.z, home: [g.x, g.z], plot: target, state: 'out', t: 0 };
+  setTimeout(() => toast('🚚 The Driver is heading out to explore'), 4200);
+}
+function truckSystem(dt) {
+  const T = G.truck, D = CONFIG.town.driver;
+  if (!T) return;
+  const [tx, tz] = T.state === 'out' ? [T.plot.x, T.plot.z] : T.home;
+  if (T.state === 'explore') {
+    if ((T.t += dt) >= D.exploreTime) {
+      if (!T.plot.done && G.res.fuel >= D.fuel) {
+        G.res.fuel -= D.fuel;
+        completePlot(T.plot);
+        toast('🚚 The Driver unlocked a new area!', 2600, true);
+      }
+      T.state = 'back';
+    }
+    if (((T.t * 2) | 0) !== (((T.t - dt) * 2) | 0)) burst(T.x + rand(-2, 2), 1, T.z + rand(-2, 2), 4, 0xd9c7a0, 0.6);
+  } else {
+    const dx = tx - T.x, dz = tz - T.z, d = Math.hypot(dx, dz), step = Math.min(d, D.speed * dt);
+    if (d > 0.01) { T.x += dx / d * step; T.z += dz / d * step; T.mesh.rotation.y = Math.atan2(dx, dz); }
+    if (d < 0.3) {
+      if (T.state === 'out') { T.state = 'explore'; T.t = 0; }
+      else { scene.remove(T.mesh); G.truck = null; return; }
+    }
+  }
+  T.mesh.position.set(T.x, 0, T.z);
+}
+on('dayStart', startTrip);
 // ---- Materials and food
-const resEls = Object.fromEntries(['wood', 'stone', 'food'].map(k => [k, document.getElementById(k + 'Chip')]));
+const resEls = Object.fromEntries(['wood', 'stone', 'food', 'fuel'].map(k => [k, document.getElementById(k + 'Chip')]));
 function showRes() {
   for (const k in resEls) {
     if (G.res[k] > 0 || (k === 'food' && G.town)) resEls[k].classList.add('seen');
@@ -3264,7 +3328,7 @@ const MISSION_CHECKS = {
   roads: () => G.plots.filter(o => o.def.type === 'road' && o.done).length,
   renos: () => G.plots.filter(o => o.def.type === 'renovate' && o.done).length,
   farm: () => kindCount('farm'), mill: () => kindCount('mill'), quarry: () => kindCount('quarry'),
-  hall: () => G.hallLevel, guards: () => GUARDS.workers, wallLevel: () => G.wallLevel,
+  hall: () => G.hallLevel, guards: () => GUARDS.workers, wallLevel: () => G.wallLevel, driver: () => DRIVER.workers,
 };
 const missionsEl = document.getElementById('missions'), missionChipEl = document.getElementById('missionChip');
 missionsEl.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -3325,7 +3389,7 @@ const Save = {
     const data = { v: 1, seed: G.seed, log: G.log, day: G.day, scrap: G.scrap + paid, upgrades: G.upgrades, shelterLevel: G.shelterLevel,
       hp: Math.ceil(G.player.hp), walls: G.wallPieces.map(pc => pc.alive ? Math.round(pc.hp) : 0),
       sites: G.sites.map(o => Math.floor(o.stored)), searched: G.houses.flatMap((h, i) => h.searched ? [i] : []),
-      refugees: G.refugees.length, bitten: !!G.bitten, res: G.res, jobs: G.sites.map(o => o.workers || 0), builders: BUILDERS.workers, guards: GUARDS.workers, kills: G.kills, retakes: G.retakes, missions: G.missionsDone,
+      refugees: G.refugees.length, bitten: !!G.bitten, res: G.res, jobs: G.sites.map(o => o.workers || 0), builders: BUILDERS.workers, guards: GUARDS.workers, driver: DRIVER.workers, kills: G.kills, retakes: G.retakes, missions: G.missionsDone,
       yards: G.sites.map(o => o.plot ? [o.hits, o.overrun ? 1 : 0, o.fence?.broken ? 1 : 0] : 0),
       cons: Object.fromEntries(G.plots.filter(o => o.cons).map(o => [o.def.id, Math.ceil(o.cons.left)])) };
     try { localStorage.setItem(CONFIG.save.key, JSON.stringify(data)); } catch {}
@@ -3369,6 +3433,7 @@ const Save = {
       }
     });
     for (let k = 0; k < (d.builders || 0); k++) { const r = G.refugees.find(o => !o.job); if (r) setJob(r, BUILDERS); }
+    if (d.driver) { const r = G.refugees.find(o => !o.job); if (r) { setJob(r, DRIVER); r.x = r.tx; r.z = r.tz; } }
     for (let k = 0; k < (d.guards || 0); k++) { const r = G.refugees.find(o => !o.job); if (r) { setJob(r, GUARDS); r.x = r.tx; r.z = r.tz; } }
     (d.yards || []).forEach((y, i) => {
       const site = G.sites[i];
@@ -3628,6 +3693,7 @@ function frameLoop(now) {
     foodSystem(CONFIG.sim.step);
     siteSystem(CONFIG.sim.step);
     yardSystem(CONFIG.sim.step);
+    truckSystem(CONFIG.sim.step);
     shopSystem();
     fxSystem(CONFIG.sim.step);
     saveSystem(CONFIG.sim.step);
