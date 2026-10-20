@@ -131,6 +131,26 @@
   /* Health: HUD heart chip, a small bar over the survivor, red screen edges when bitten */
   .chip .dot.hp { background: #ffb3c4; }
   .chip .dot.town { background: var(--yellow); }
+  #townChip { pointer-events: auto; cursor: pointer; }
+  #resRow { display: flex; gap: 6px; flex-wrap: wrap; }
+  #resRow .chip { display: none; } #resRow .chip.seen { display: inline-flex; }
+  .chip .dot.wood { background: #e0b98a; } .chip .dot.stone { background: #c9ccd6; } .chip .dot.food { background: #b6e38a; }
+  #foodChip.hungry span { color: var(--red); } #foodChip.hungry { animation: bump .5s ease-in-out infinite; }
+  /* Pop-up panels: renovation choice and refugee jobs (the game pauses while one is open) */
+  .panel { position: absolute; inset: 0; z-index: 4; display: none; align-items: center; justify-content: center; background: rgba(20,26,48,.45); }
+  .panel.open { display: flex; }
+  .panel .card { width: min(94%, 460px); max-height: 88%; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 8px;
+    background: var(--paper); border: 3px solid var(--ink); border-radius: 22px; box-shadow: 0 6px 0 var(--ink); }
+  .panel h2 { font-size: 24px; text-align: center; } .panel p.sub { font-size: 14px; color: var(--muted); text-align: center; }
+  .panel button { font: inherit; color: var(--ink); cursor: pointer; border: 3px solid var(--ink); border-radius: 14px; background: #fff; }
+  .opt { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; padding: 8px 12px; text-align: left; box-shadow: 0 3px 0 var(--ink); }
+  .opt .ic, .job .ic { font-size: 24px; } .opt b, .job b { font-size: 17px; display: block; } .opt small, .job small { font-size: 13px; color: var(--muted); }
+  .tag { padding: 1px 8px; font-size: 13px; color: #fff; background: var(--green2); border-radius: 999px; white-space: nowrap; }
+  .job { display: grid; grid-template-columns: auto 1fr auto auto auto; align-items: center; gap: 8px; padding: 6px 10px; border: 2px solid var(--ink); border-radius: 14px; background: #fff; }
+  .job button { width: 34px; height: 34px; font-size: 20px; font-weight: 700; padding: 0; box-shadow: 0 2px 0 var(--ink); }
+  .job button:disabled { opacity: .35; cursor: default; }
+  .job .n { min-width: 34px; text-align: center; font-size: 17px; }
+  .panel .close { padding: 8px; font-size: 19px; font-weight: 700; color: #fff; background: linear-gradient(var(--green1), var(--green2)); box-shadow: 0 3px 0 var(--ink); }
   #toast.big { top: calc(env(safe-area-inset-top) + 180px); padding: 12px 28px; font-size: 24px; background: var(--green1); color: #fff;
     text-shadow: 0 2px 0 rgba(30,42,74,.4); }
   .bubble.refugee { padding: 2px 10px; color: var(--ink); background: #ffe9a8; }
@@ -227,7 +247,12 @@
       <div class="chip small" id="hpChip"><i class="dot hp">❤️</i><span id="hpText">100</span></div>
       <div class="chip small" id="survChip"><i class="dot">🧑‍🌾</i><span id="survCount">0</span></div>
       <div class="chip small"><i class="dot gun">🔫</i><span id="gunInfo"></span></div>
-      <div class="chip small" id="townChip" style="display:none"><i class="dot town">🏘️</i><span id="townCount"></span></div>
+      <div class="chip small" id="townChip" style="display:none" title="Refugee jobs (T)"><i class="dot town">🏘️</i><span id="townCount"></span></div>
+      <div id="resRow">
+        <div class="chip small" id="woodChip"><i class="dot wood">🪵</i><span>0</span></div>
+        <div class="chip small" id="stoneChip"><i class="dot stone">🪨</i><span>0</span></div>
+        <div class="chip small" id="foodChip"><i class="dot food">🍖</i><span>0</span></div>
+      </div>
     </div>
     <div id="dayInfo"><span class="sun"></span><span class="ct"><small></small><b></b></span></div>
     <div id="fps"></div>
@@ -238,6 +263,9 @@
     <button id="pauseBtn" title="Pause (Esc)" aria-label="Pause"><i></i></button>
     <div id="shop"><div class="sh-head"><span class="sh-ico">🏠</span><b>Shelter</b><span class="sh-lv"></span></div><div class="cards"></div></div>
   </div>
+  <div id="choice" class="panel"><div class="card"><h2>Renovate into...</h2><p class="sub"></p><div class="opts" style="display:flex;flex-direction:column;gap:8px"></div></div></div>
+  <div id="jobs" class="panel"><div class="card"><h2>Refugee Jobs</h2><p class="sub"></p><div class="rows" style="display:flex;flex-direction:column;gap:6px"></div>
+    <button class="close">Done</button></div></div>
   <div id="joy"><div id="knob"></div></div>
   <div id="pause"><div class="card"><h2>Paused</h2>
     <button class="go" id="resumeBtn">Resume</button>
@@ -444,6 +472,20 @@ const CONFIG = {
     // Renovations: searched buildings in areas a road reaches get a "Renovate" plot.
     // Houses become Workshops (scrap/min, paid to you); garages become Bunkhouses (refugee beds).
     renovate: { cost: 15, workshopRate: 6, bunkBeds: 2, tint: 0xfff0b0, bunkTint: 0xc8e6ff },
+    // What a renovated building becomes. rate = per minute with 1 worker; it doubles (bonusMul) in the
+    // right kind of area. Buildings need refugees to work them: 0 workers = stopped (workerMul).
+    jobs: {
+      slots: 2, workerMul: [0, 1, 1.8], bonusMul: 2, hungryMul: 0.5,
+      kinds: {
+        workshop: { name: 'Workshop',    icon: '🔧', res: 'scrap', rate: 6, bonus: ['city', 'rail', 'dock'], where: 'city areas', tint: 0xfff0b0, heap: 0xf2a20c },
+        mill:     { name: 'Lumber Mill', icon: '🪵', res: 'wood',  rate: 5, bonus: ['forest'], where: 'forest', tint: 0xe0b98a, heap: 0x9a6a3a },
+        quarry:   { name: 'Quarry',      icon: '🪨', res: 'stone', rate: 4, bonus: ['hills', 'nearMountain'], where: 'hills or by mountains', tint: 0xd0d2dc, heap: 0x9aa0aa },
+        farm:     { name: 'Farm',        icon: '🍖', res: 'food',  rate: 6, bonus: ['meadow', 'lake'], where: 'meadows and lakes', tint: 0xc8f0a0, heap: 0x7bc043 },
+        bunk:     { name: 'Bunkhouse',   icon: '🛏️', beds: 2, tint: 0xc8e6ff },
+      },
+    },
+    // Every refugee eats; with no food, workers work at half speed
+    food: { start: 30, eatPerMin: 0.5 },
     roads: { cost: 20, outputMul: 1.5, beds: 2, houses: 2, houseScale: 4.5, houseTint: 0xffe2c4, lampEvery: 7, width: 3.2 },
   },
   survivors: {
@@ -546,6 +588,8 @@ const G = {
   wallPieces: [],                     // { side, x, z, rot, hp, alive, obstacle }
   wallLevel: 0, towerLevel: 0,        // index into structures.wall.levels / tower.levels
   extraBeds: 0,                       // beds added by roads out to the yards
+  res: { wood: 0, stone: 0, food: 0 }, // town materials
+  hungry: false,
   towers: [],                         // built watchtowers { x, z, guard }
   campSpots: [],                      // where survivor camps were placed
   crates: [],                         // loot crates { x, z, alive }
@@ -1414,7 +1458,8 @@ document.getElementById('resumeBtn').addEventListener('click', () => setMenu(fal
 document.getElementById('fullBtn').addEventListener('click', toggleFullscreen);
 window.addEventListener('keydown', (e) => {
   if (e.repeat) return;
-  if (e.code === 'Escape' || e.code === 'KeyP') setMenu(!pauseEl.classList.contains('open'));
+  if (e.code === 'Escape' && jobsEl.classList.contains('open')) openJobs(false);
+  else if (e.code === 'Escape' || e.code === 'KeyP') setMenu(!pauseEl.classList.contains('open'));
   else if (e.code === 'KeyF') toggleFullscreen();
   else if (e.code === 'Equal' || e.code === 'NumpadAdd') zoomBy(-1);
   else if (e.code === 'Minus' || e.code === 'NumpadSubtract') zoomBy(1);
@@ -2232,7 +2277,9 @@ function siteSystem(dt) {
     const n = Math.floor(site.stored);
     if (n < 1) continue;
     // Paid straight into your pile, wherever you are
-    site.stored -= n; G.scrap += n; site.paid = 1;
+    site.stored -= n; site.paid = 1;
+    if (site.res && site.res !== 'scrap') { G.res[site.res] += n; continue; }
+    G.scrap += n;
     emit('scrapGained', n);
   }
 }
@@ -2245,7 +2292,7 @@ function syncSites() {
     const k = 1 + site.paid * 0.4;
     site.heap.scale.set(0.9 * k, 0.9 * k, 0.9 * k);
     placeBubble(site.el, site.x, 3.4, site.z);
-    const text = `${site.icon || '🏭'} +${rate}/min`;
+    const text = site.slots ? (site.workers ? `${site.icon} +${rate}/min 👷${site.workers}` : `${site.icon} needs workers (T)`) : `${site.icon || '🏭'} +${rate}/min`;
     if (text !== site.shown) { site.shown = text; site.textEl.textContent = text; }
   }
 }
@@ -2262,6 +2309,7 @@ function startTown() {
   G.town = true; G.built.town = true;
   if (restoring) return finishTown();
   toast('Your outpost is now a town!', 3200, true);
+  G.res.food += CONFIG.town.food.start;
   burst(0, 2, 0, 30, 0xffffff, 1.5);
   finishTown();
   setTimeout(() => spawnRefugees(1), 2500);            // the first one shows up right away
@@ -2281,7 +2329,7 @@ function finishTown() {
   const el = makeBubble('', true);
   el.classList.add('site');
   G.sites.push({ x: T.stash.x, z: T.stash.z, stored: 0, cool: 0, pile, heap, el, textEl: el.firstChild, shown: '', icon: '🏘️',
-    stats: () => ({ rate: G.refugees.filter(r => r.state === 'home').length * T.refugees.rate, cap: T.stash.cap }) });
+    stats: () => ({ rate: G.refugees.filter(r => r.state === 'home' && !r.job).length * T.refugees.rate, cap: T.stash.cap }) });
 }
 on('built', (def) => {
   if (def.type === 'wall' && CONFIG.plots.every(d => d.type !== 'wall' || G.built[d.id])) startTown();
@@ -2327,11 +2375,12 @@ function refugeeSystem(dt) {
         emit('refugeeArrived');
         burst(r.x, 1.5, r.z, 10, CONFIG.colors.scrap);
         r.wait = rand(R.wanderPause[0], R.wanderPause[1]);
-      } else if ((r.wait -= dt) <= 0) { [r.tx, r.tz] = townSpot(); r.wait = rand(R.wanderPause[0], R.wanderPause[1]); }
+        if (workSites().some(o => o.workers < o.slots)) setTimeout(() => toast('New refugee! Press T to give them a job'), 2000);
+      } else if (!r.job && (r.wait -= dt) <= 0) { [r.tx, r.tz] = townSpot(); r.wait = rand(R.wanderPause[0], R.wanderPause[1]); }
       continue;
     }
     // Walk straight there (no prop collisions, so they can never get stuck); stroll once home
-    const speed = r.state === 'arriving' ? R.walkSpeed : R.walkSpeed * 0.4, step = Math.min(d, speed * dt);
+    const speed = r.state === 'arriving' || d > 6 ? R.walkSpeed : R.walkSpeed * 0.4, step = Math.min(d, speed * dt);
     r.x += dx / d * step; r.z += dz / d * step;
     r.angle = turnToward(r.angle, Math.atan2(dx, dz), 8 * dt);
     r.moving = speed / CONFIG.survivors.walkSpeed;
@@ -2387,29 +2436,116 @@ function refreshRenovations() {
   const RV = CONFIG.town.renovate;
   G.houses.forEach((h, i) => {
     if (!h.model || !h.searched || !h.zone.connected || h.renoPlot) return;
-    const bunk = h.model === 'garage';
     h.renoPlot = true;
-    addPlot({ id: `reno${i}`, type: 'renovate', label: bunk ? 'Renovate: Bunkhouse' : 'Renovate: Workshop', x: h.x, z: h.z, cost: RV.cost,
-      info: bunk ? `🛏️ +${RV.bunkBeds} refugee beds` : `🔧 +${RV.workshopRate} scrap/min, sent to you`, requires: 'town', house: i });
+    addPlot({ id: `reno${i}`, type: 'renovate', label: 'Renovate', x: h.x, z: h.z, cost: RV.cost,
+      info: '🔧 🪵 🪨 🍖 🛏️ you pick what it becomes', requires: 'town', house: i });
   });
 }
+const choiceEl = document.getElementById('choice'), jobsEl = document.getElementById('jobs');
+choiceEl.addEventListener('pointerdown', (e) => e.stopPropagation());
+jobsEl.addEventListener('pointerdown', (e) => e.stopPropagation());
+let renoKinds = {};                                  // house index -> kind, filled from the save before the log replays
+// Is this kind of building boosted where the house stands?
+function hasBonus(zone, kind) {
+  const b = CONFIG.town.jobs.kinds[kind].bonus || [];
+  if (b.includes(zone.kind) || (zone.landmark && b.includes(zone.landmark))) return true;
+  return b.includes('nearMountain') && HEX_DIRS.some(([dq, dr]) => zoneAtIndex(zone.q + dq, zone.r + dr)?.kind === 'mountain');
+}
 function renovate(def) {
-  const RV = CONFIG.town.renovate, h = G.houses[def.house], M = CONFIG.models[h.model], bunk = h.model === 'garage';
+  const h = G.houses[def.house];
+  if (restoring) return buildRenovation(def.house, renoKinds[def.house] || (h.model === 'garage' ? 'bunk' : 'workshop'));
+  // Ask what it should become; the game waits
+  const J = CONFIG.town.jobs, opts = choiceEl.querySelector('.opts');
+  choiceEl.querySelector('.sub').textContent = `This building is in ${h.zone.landmark ? CONFIG.landmarks[h.zone.landmark].label : h.zone.kind === 'meadow' ? 'a meadow' : 'the ' + h.zone.kind}.`;
+  opts.innerHTML = '';
+  for (const [kind, K] of Object.entries(J.kinds)) {
+    const bonus = hasBonus(h.zone, kind), b = document.createElement('button');
+    b.className = 'opt';
+    b.innerHTML = `<span class="ic">${K.icon}</span><span><b>${K.name}</b><small>${K.beds ? `+${K.beds} refugee beds` : `+${K.rate * (bonus ? J.bonusMul : 1)} ${K.res}/min per worker · best in ${K.where}`}</small></span>${bonus ? `<span class="tag">x${J.bonusMul} here</span>` : '<span></span>'}`;
+    b.addEventListener('click', () => {
+      choiceEl.classList.remove('open'); setPaused('choice', false);
+      G.log.push(`r:${def.house}:${kind}`);
+      buildRenovation(def.house, kind);
+      Save.write();
+    });
+    opts.appendChild(b);
+  }
+  choiceEl.classList.add('open'); setPaused('choice', true);
+}
+function buildRenovation(i, kind) {
+  const J = CONFIG.town.jobs, K = J.kinds[kind], h = G.houses[i], M = CONFIG.models[h.model];
   // A fresh, painted copy just over the ruin (slightly bigger, so it covers it)
-  const m = tinted(MODELS[h.model].scene.clone(), bunk ? RV.bunkTint : RV.tint);
+  const m = tinted(MODELS[h.model].scene.clone(), K.tint);
   m.position.set(h.mx, 0, h.mz); m.rotation.y = h.face;
   scene.add(m); pop(m, M.scale * 1.03);
   burst(h.mx, 3, h.mz, 20, 0xffffff, 1.3);
-  if (bunk) { G.extraBeds += RV.bunkBeds; townCount(); toast('Bunkhouse ready: more beds for refugees!'); return; }
-  // Workshop: a little scrap heap out front that pays you every few seconds
-  const pile = new THREE.Group(), heap = new THREE.Mesh(new THREE.ConeGeometry(0.8, 0.9, 6), flat(CONFIG.colors.scrap));
+  if (K.beds) { G.extraBeds += K.beds; townCount(); toast('Bunkhouse ready: more beds for refugees!'); return; }
+  // A little heap out front shows what it makes; it pays out every few seconds while someone works it
+  const pile = new THREE.Group(), heap = new THREE.Mesh(new THREE.ConeGeometry(0.8, 0.9, 6), flat(K.heap));
   heap.geometry.translate(0, 0.45, 0); pile.add(heap); pile.position.set(h.x, 0, h.z);
   scene.add(pile); pop(pile);
   const el = makeBubble('', true);
   el.classList.add('site');
-  G.sites.push({ x: h.x, z: h.z, stored: 0, cool: 0, pile, heap, el, textEl: el.firstChild, shown: '', icon: '🔧',
-    stats: () => ({ rate: RV.workshopRate, cap: 1 }) });
-  toast('Workshop running: scrap flows to you!');
+  const bonus = hasBonus(h.zone, kind) ? J.bonusMul : 1;
+  const site = { x: h.x, z: h.z, stored: 0, cool: 0, pile, heap, el, textEl: el.firstChild, shown: '', icon: K.icon,
+    kind, res: K.res, name: K.name, bonus, workers: 0, slots: J.slots,
+    stats: () => ({ rate: K.rate * bonus * J.workerMul[site.workers] * (G.hungry ? J.hungryMul : 1), cap: 1 }) };
+  G.sites.push(site);
+  if (restoring) return;
+  const idle = G.refugees.find(r => !r.job && r.state === 'home');
+  if (idle) setJob(idle, site);
+  toast(idle ? `${K.name} running! A refugee went to work there` : `${K.name} built! Give it workers: press T`, 2600);
+}
+// ---- Refugee jobs
+const workSites = () => G.sites.filter(o => o.slots);
+function setJob(r, site) {
+  if (r.job) r.job.workers--;
+  r.job = site;
+  if (site) { site.workers++; r.tx = site.x + rand(-1.6, 1.6); r.tz = site.z + rand(1, 2); }
+  else [r.tx, r.tz] = townSpot();
+}
+function renderJobs() {
+  const rows = jobsEl.querySelector('.rows'), idle = G.refugees.filter(r => !r.job), F = CONFIG.town.food;
+  const eat = G.refugees.length * F.eatPerMin, farms = workSites().filter(o => o.res === 'food').reduce((n, o) => n + o.stats().rate, 0);
+  jobsEl.querySelector('.sub').textContent = `🙏 ${idle.length} idle (they work the Town Stash for scrap) · 🍖 ${Math.floor(G.res.food)} food, eating ${+eat.toFixed(1)}/min, farms +${+farms.toFixed(1)}/min${G.hungry ? ' · HUNGRY: half speed!' : ''}`;
+  rows.innerHTML = '';
+  const sites = workSites();
+  if (!sites.length) rows.innerHTML = '<p class="sub">No buildings to work yet. Build a road to a Scrap Yard, then renovate searched buildings along it.</p>';
+  for (const site of sites) {
+    const row = document.createElement('div'), K = CONFIG.town.jobs.kinds[site.kind];
+    row.className = 'job';
+    row.innerHTML = `<span class="ic">${site.icon}</span><span><b>${site.name}</b><small>+${+site.stats().rate.toFixed(1)} ${site.res}/min${site.bonus > 1 ? ` · x${site.bonus} area bonus` : ''}</small></span>
+      <button aria-label="Fewer workers">−</button><span class="n">👷${site.workers}/${site.slots}</span><button aria-label="More workers">+</button>`;
+    const [minus, plus] = row.querySelectorAll('button');
+    minus.disabled = !site.workers; plus.disabled = site.workers >= site.slots || !idle.length;
+    minus.addEventListener('click', () => { setJob(G.refugees.find(r => r.job === site), null); renderJobs(); Save.write(); });
+    plus.addEventListener('click', () => { const r = G.refugees.find(o => !o.job); if (r) setJob(r, site); renderJobs(); Save.write(); });
+    rows.appendChild(row);
+  }
+}
+function openJobs(on) {
+  if (!window.__ready || !G.town) return;
+  jobsEl.classList.toggle('open', on); setPaused('jobs', on);
+  if (on) { renderJobs(); for (const k in keys) keys[k] = false; }
+}
+document.getElementById('townChip').addEventListener('pointerdown', (e) => { e.stopPropagation(); openJobs(true); });
+jobsEl.querySelector('.close').addEventListener('click', () => openJobs(false));
+addEventListener('keydown', (e) => { if (e.code === 'KeyT' && !e.repeat) openJobs(!jobsEl.classList.contains('open')); });
+// ---- Materials and food
+const resEls = Object.fromEntries(['wood', 'stone', 'food'].map(k => [k, document.getElementById(k + 'Chip')]));
+function showRes() {
+  for (const k in resEls) {
+    if (G.res[k] > 0 || (k === 'food' && G.town)) resEls[k].classList.add('seen');
+    resEls[k].lastChild.textContent = Math.floor(G.res[k]);
+  }
+  resEls.food.classList.toggle('hungry', G.hungry);
+}
+function foodSystem(dt) {
+  if (!G.town) return;
+  G.res.food = Math.max(0, G.res.food - G.refugees.length * CONFIG.town.food.eatPerMin / 60 * dt);
+  const hungry = G.res.food <= 0 && G.refugees.length > 0;
+  if (hungry && !G.hungry) toast('Food ran out! Workers are hungry: build a Farm', 3000);
+  G.hungry = hungry;
 }
 // Garage: every dawn, broken and chipped walls come back to full for free
 function repairAllWalls() {
@@ -2753,6 +2889,7 @@ function uiSystem(dt) {
   frames = 0; uiTimer = 0;
   if (CONFIG.debug.showFps) fpsEl.textContent = `${fps | 0} fps · ${pixelRatio.toFixed(2)}x · ${G.zombieCount} zombies · ${(G.cpuMs || 0).toFixed(1)} ms`;
   scrapEl.textContent = G.scrap;
+  showRes();
   // Auto quality: if the phone struggles, render fewer pixels
   lowFpsTime = fps < CONFIG.quality.lowFps ? lowFpsTime + 0.5 : 0;
   if (lowFpsTime >= CONFIG.quality.lowFpsSeconds && pixelRatio > CONFIG.quality.minPixelRatio + 0.01) {
@@ -2775,7 +2912,7 @@ const Save = {
     const data = { v: 1, seed: G.seed, log: G.log, day: G.day, scrap: G.scrap + paid, upgrades: G.upgrades, shelterLevel: G.shelterLevel,
       hp: Math.ceil(G.player.hp), walls: G.wallPieces.map(pc => pc.alive ? Math.round(pc.hp) : 0),
       sites: G.sites.map(o => Math.floor(o.stored)), searched: G.houses.flatMap((h, i) => h.searched ? [i] : []),
-      refugees: G.refugees.length, bitten: !!G.bitten };
+      refugees: G.refugees.length, bitten: !!G.bitten, res: G.res, jobs: G.sites.map(o => o.workers || 0) };
     try { localStorage.setItem(CONFIG.save.key, JSON.stringify(data)); } catch {}
   },
   // Rebuild everything a save describes on the freshly generated (same seed) map
@@ -2783,6 +2920,8 @@ const Save = {
     restoring = true;
     G.day = d.day;
     d.searched.forEach(i => { if (G.houses[i]) G.houses[i].searched = true; });
+    renoKinds = {};
+    for (const entry of d.log) if (entry[0] === 'r') { const [, i, kind] = entry.split(':'); renoKinds[i] = kind; }
     for (const entry of d.log) {
       const [kind, id] = entry.split(':');
       if (kind === 'p') { const pl = G.plots.find(o => o.def.id === id); if (pl) completePlot(pl); }
@@ -2801,6 +2940,17 @@ const Save = {
     d.sites.forEach((n, i) => { if (G.sites[i]) G.sites[i].stored = n; });
 
     if (G.town && d.refugees) spawnRefugees(d.refugees, true);
+    // Old saves had no materials: the town gets its starting food
+    Object.assign(G.res, d.res || { food: G.town ? CONFIG.town.food.start : 0 });
+    // (older saves: every building gets one worker if there's someone free)
+    (d.jobs || G.sites.map(o => o.slots ? 1 : 0)).forEach((n, i) => {
+      const site = G.sites[i];
+      for (let k = 0; k < n && site?.slots; k++) {
+        const r = G.refugees.find(o => !o.job);
+        if (r) { setJob(r, site); r.x = r.tx; r.z = r.tz; }
+      }
+    });
+    showRes();
     if (G.shelterLevel) { G.player.x = door.x; G.player.z = door.z; }
     // Everyone who was walking somewhere is already there
     for (const sv of G.survivors) {
@@ -3046,6 +3196,7 @@ function frameLoop(now) {
     buildSystem(CONFIG.sim.step);
     survivorSystem(CONFIG.sim.step);
     refugeeSystem(CONFIG.sim.step);
+    foodSystem(CONFIG.sim.step);
     siteSystem(CONFIG.sim.step);
     shopSystem();
     fxSystem(CONFIG.sim.step);
