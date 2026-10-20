@@ -1905,6 +1905,7 @@ function buildWallRing() {
   const per = Math.max(1, Math.round(corner / W.pieceLength));   // a side is as long as the corner radius
   wallGfx.mesh = new THREE.InstancedMesh(palisadeGeometry(W), new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }), per * 6);
   wallGfx.mesh.setColorAt(0, new THREE.Color());
+  wallGfx.mesh.frustumCulled = false;   // pieces move/grow at runtime, so the cached bounds would hide the ring once you walk away
   scene.add(wallGfx.mesh);
   for (let side = 0; side < 6; side++) {
     const [ax, az] = hexCorner(side, corner), [bx, bz] = hexCorner(side + 1, corner);
