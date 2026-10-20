@@ -141,6 +141,13 @@
   #resRow .chip { display: none; } #resRow .chip.seen { display: inline-flex; }
   .chip .dot.wood { background: #e0b98a; } .chip .dot.stone { background: #c9ccd6; } .chip .dot.food { background: #b6e38a; }
   #foodChip.hungry span { color: var(--red); } #foodChip.hungry { animation: bump .5s ease-in-out infinite; }
+  #missionChip { pointer-events: auto; cursor: pointer; max-width: min(320px, 70vw); }
+  #missionChip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip .dot.mission { background: #ffd0a0; }
+  .mrow { padding: 8px 12px; border: 2px solid var(--ink); border-radius: 14px; background: #fff; display: flex; flex-direction: column; gap: 4px; }
+  .mrow b { font-size: 16px; } .mrow small { font-size: 13px; color: var(--muted); }
+  .mrow .bar { height: 9px; border-radius: 999px; background: #e3e8f5; overflow: hidden; }
+  .mrow .bar i { display: block; height: 100%; background: linear-gradient(var(--gold1), var(--gold2)); }
   /* Pop-up panels: renovation choice and refugee jobs (the game pauses while one is open) */
   .panel { position: absolute; inset: 0; z-index: 4; display: none; align-items: center; justify-content: center; background: rgba(20,26,48,.45); }
   .panel.open { display: flex; }
@@ -253,6 +260,7 @@
       <div class="chip small" id="survChip"><i class="dot">🧑‍🌾</i><span id="survCount">0</span></div>
       <div class="chip small"><i class="dot gun">🔫</i><span id="gunInfo"></span></div>
       <div class="chip small" id="townChip" style="display:none" title="Refugee jobs (T)"><i class="dot town">🏘️</i><span id="townCount"></span></div>
+      <div class="chip small" id="missionChip" title="Missions (J)"><i class="dot mission">📜</i><span></span></div>
       <div id="resRow">
         <div class="chip small" id="woodChip"><i class="dot wood">🪵</i><span>0</span></div>
         <div class="chip small" id="stoneChip"><i class="dot stone">🪨</i><span>0</span></div>
@@ -269,6 +277,8 @@
     <div id="shop"><div class="sh-head"><span class="sh-ico">🏠</span><b>Shelter</b><span class="sh-lv"></span></div><div class="cards"></div></div>
   </div>
   <div id="choice" class="panel"><div class="card"><h2>Renovate into...</h2><p class="sub"></p><div class="opts" style="display:flex;flex-direction:column;gap:8px"></div></div></div>
+  <div id="missions" class="panel"><div class="card"><h2>Missions</h2><p class="sub"></p><div class="rows" style="display:flex;flex-direction:column;gap:6px"></div>
+    <button class="close">Done</button></div></div>
   <div id="jobs" class="panel"><div class="card"><h2>Refugee Jobs</h2><p class="sub"></p><div class="rows" style="display:flex;flex-direction:column;gap:6px"></div>
     <button class="close">Done</button></div></div>
   <div id="joy"><div id="knob"></div></div>
@@ -277,7 +287,7 @@
     <button id="fullBtn">Fullscreen</button>
     <div class="row"><button id="sfxBtn">Sound: On</button><button id="musicBtn">Music: On</button></div>
     <div class="keys"><kbd>WASD</kbd><span>Move (arrow keys work too)</span><kbd>Mouse</kbd><span>Or click and drag to move</span>
-      <kbd>Wheel</kbd><span>Zoom in and out (or + / -)</span><kbd>Esc</kbd><span>Pause</span><kbd>F</kbd><span>Fullscreen</span><kbd>M</kbd><span>Mute sound and music</span></div>
+      <kbd>Wheel</kbd><span>Zoom in and out (or + / -)</span><kbd>Esc</kbd><span>Pause</span><kbd>F</kbd><span>Fullscreen</span><kbd>M</kbd><span>Mute sound and music</span><kbd>T</kbd><span>Refugee jobs</span><kbd>J</kbd><span>Missions</span></div>
     <p class="touch-only">Drag anywhere to move. Pinch-free: shooting is automatic.</p>
   </div></div>
   <div id="loading"><h1>Dawnhold<small>HOLD THE NIGHT · BUILD BY DAY</small></h1>
@@ -558,6 +568,34 @@ const CONFIG = {
       { cost: 90, rate: 45, cap: 130 },
     ],
   },
+  // Missions: done in order, `active` at a time. check = what is counted (see MISSION_CHECKS),
+  // reward = scrap / wood / stone / food / refugee. Rewards are paid the moment a mission is done.
+  missions: { active: 3, list: [
+    { id: 'kill10',   text: 'Kill 10 zombies',             check: 'kills',     n: 10,  reward: { scrap: 10 } },
+    { id: 'shelter',  text: 'Build the Shelter',            check: 'shelter',   n: 1,   reward: { scrap: 5 } },
+    { id: 'rescue1',  text: 'Rescue a survivor',            check: 'rescued',   n: 1,   reward: { scrap: 10 } },
+    { id: 'yard1',    text: 'Build a Scrap Yard',           check: 'yards',     n: 1,   reward: { scrap: 10 } },
+    { id: 'walls',    text: 'Build all 6 walls',            check: 'walls',     n: 6,   reward: { scrap: 20 } },
+    { id: 'day5',     text: 'Survive until day 5',          check: 'day',       n: 5,   reward: { scrap: 25 } },
+    { id: 'ref3',     text: 'Have 3 refugees in town',      check: 'refugees',  n: 3,   reward: { scrap: 15, food: 10 } },
+    { id: 'road',     text: 'Build a road to a yard',       check: 'roads',     n: 1,   reward: { wood: 10 } },
+    { id: 'reno',     text: 'Renovate a building',          check: 'renos',     n: 1,   reward: { scrap: 20 } },
+    { id: 'farm',     text: 'Build a Farm',                 check: 'farm',      n: 1,   reward: { food: 20 } },
+    { id: 'mill',     text: 'Build a Lumber Mill',          check: 'mill',      n: 1,   reward: { wood: 15 } },
+    { id: 'quarry',   text: 'Build a Quarry',               check: 'quarry',    n: 1,   reward: { stone: 15 } },
+    { id: 'hall2',    text: 'Town Hall to level 2',         check: 'hall',      n: 2,   reward: { refugee: 1, scrap: 20 } },
+    { id: 'kill100',  text: 'Kill 100 zombies',             check: 'kills',     n: 100, reward: { scrap: 40 } },
+    { id: 'guards',   text: 'Put 2 refugees on guard duty', check: 'guards',    n: 2,   reward: { scrap: 20 } },
+    { id: 'yard2',    text: 'Upgrade a Scrap Yard to Lv 2', check: 'yardLv',    n: 2,   reward: { scrap: 25 } },
+    { id: 'hall3',    text: 'Town Hall to level 3',         check: 'hall',      n: 3,   reward: { stone: 30 } },
+    { id: 'stone',    text: 'Upgrade to Stone walls',       check: 'wallLevel', n: 1,   reward: { scrap: 40 } },
+    { id: 'day10',    text: 'Survive until day 10',         check: 'day',       n: 10,  reward: { scrap: 60, food: 20 } },
+    { id: 'retake',   text: 'Take back a Zombie Yard',      check: 'retakes',   n: 1,   reward: { scrap: 50 } },
+    { id: 'hall5',    text: 'Town Hall to level 5',         check: 'hall',      n: 5,   reward: { scrap: 100, refugee: 1 } },
+    { id: 'iron',     text: 'Upgrade to Iron walls',        check: 'wallLevel', n: 2,   reward: { scrap: 100 } },
+    { id: 'kill500',  text: 'Kill 500 zombies',             check: 'kills',     n: 500, reward: { scrap: 150 } },
+    { id: 'day20',    text: 'Survive until day 20',         check: 'day',       n: 20,  reward: { scrap: 200 } },
+  ] },
   scrap: {
     perZombie: [1, 2], max: 300,
     popSpeed: [3, 6], popUp: [6, 9], gravity: 25,
@@ -626,6 +664,8 @@ const G = {
   res: { wood: 0, stone: 0, food: 0 }, // town materials
   hallLevel: 0,                       // Town Hall level (1 once you're a town)
   yardGuards: [],                     // armed guards at level 2+ Scrap Yards
+  kills: 0, retakes: 0,               // counted for missions
+  missionsDone: [],                   // mission ids already rewarded
   hungry: false,
   towers: [],                         // built watchtowers { x, z, guard }
   campSpots: [],                      // where survivor camps were placed
@@ -1496,6 +1536,7 @@ document.getElementById('fullBtn').addEventListener('click', toggleFullscreen);
 window.addEventListener('keydown', (e) => {
   if (e.repeat) return;
   if (e.code === 'Escape' && jobsEl.classList.contains('open')) openJobs(false);
+  else if (e.code === 'Escape' && document.getElementById('missions').classList.contains('open')) {}
   else if (e.code === 'Escape' || e.code === 'KeyP') setMenu(!pauseEl.classList.contains('open'));
   else if (e.code === 'KeyF') toggleFullscreen();
   else if (e.code === 'Equal' || e.code === 'NumpadAdd') zoomBy(-1);
@@ -2519,7 +2560,7 @@ function restoreYard(site) {
   site.heap.material = flat(CONFIG.colors.scrap);
   site.el.classList.remove('zyard');
   if (site.fence) setFence(site.fence, true);
-  G.scrap += RD.retakeReward; emit('scrapGained', RD.retakeReward);
+  G.scrap += RD.retakeReward; emit('scrapGained', RD.retakeReward); G.retakes++;
   burst(site.x, 2, site.z, 30, 0xffffff, 1.5);
   toast(`Scrap Yard taken back! +${RD.retakeReward} scrap`, 3000, true);
   Save.write();
@@ -3058,6 +3099,7 @@ on('scrapSpent', () => { document.getElementById('scrap').textContent = G.scrap;
 on('shot', () => { survivor.flashTime = CONFIG.fx.muzzleFlash; survivor.flash.visible = true; });
 on('zombieHit', (z) => burst(z.x, 1.4, z.z, CONFIG.fx.hitBurst, CONFIG.fx.sparkColor, 0.6));
 on('zombieKilled', (z) => {
+  G.kills++;
   burst(z.x, 1.2, z.z, CONFIG.fx.deathBurst, CONFIG.fx.gooColor);
   const [lo, hi] = CONFIG.scrap.perZombie, n = lo + ((Math.random() * (hi - lo + 1)) | 0);
   // Your survivors' kills pay you directly; your own kills drop scrap to scoop up
@@ -3198,6 +3240,7 @@ function uiSystem(dt) {
   if (CONFIG.debug.showFps) fpsEl.textContent = `${fps | 0} fps · ${pixelRatio.toFixed(2)}x · ${G.zombieCount} zombies · ${(G.cpuMs || 0).toFixed(1)} ms`;
   scrapEl.textContent = G.scrap;
   showRes();
+  missionSystem();
   // Auto quality: if the phone struggles, render fewer pixels
   lowFpsTime = fps < CONFIG.quality.lowFps ? lowFpsTime + 0.5 : 0;
   if (lowFpsTime >= CONFIG.quality.lowFpsSeconds && pixelRatio > CONFIG.quality.minPixelRatio + 0.01) {
@@ -3205,6 +3248,68 @@ function uiSystem(dt) {
     lowFpsTime = 0;
   }
 }
+
+// ------------------------------------------------------------
+// MISSIONS: a list worked through in order, a few at a time, each paying a reward when done
+// ------------------------------------------------------------
+const kindCount = (kind) => G.sites.filter(o => o.kind === kind).length;
+const MISSION_CHECKS = {
+  kills: () => G.kills, day: () => G.day, retakes: () => G.retakes,
+  shelter: () => G.shelterLevel ? 1 : 0,
+  rescued: () => G.survivors.filter(o => o.state !== 'waiting' && o.state !== 'camp').length,
+  yards: () => G.sites.filter(o => o.plot).length,
+  yardLv: () => Math.max(0, ...G.sites.filter(o => o.plot).map(o => o.level + 1)),
+  walls: () => CONFIG.plots.filter(d => d.type === 'wall' && G.built[d.id]).length,
+  refugees: () => G.refugees.length,
+  roads: () => G.plots.filter(o => o.def.type === 'road' && o.done).length,
+  renos: () => G.plots.filter(o => o.def.type === 'renovate' && o.done).length,
+  farm: () => kindCount('farm'), mill: () => kindCount('mill'), quarry: () => kindCount('quarry'),
+  hall: () => G.hallLevel, guards: () => GUARDS.workers, wallLevel: () => G.wallLevel,
+};
+const missionsEl = document.getElementById('missions'), missionChipEl = document.getElementById('missionChip');
+missionsEl.addEventListener('pointerdown', (e) => e.stopPropagation());
+const activeMissions = () => CONFIG.missions.list.filter(m => !G.missionsDone.includes(m.id)).slice(0, CONFIG.missions.active);
+const rewardText = (r) => Object.entries(r).map(([k, n]) => k === 'scrap' ? `+${n} scrap` : k === 'refugee' ? `+${n} refugee` : `+${n} ${k}`).join(', ');
+function missionSystem() {
+  if (!window.__ready || restoring) return;
+  for (const m of activeMissions()) {
+    if (MISSION_CHECKS[m.check]() < m.n) continue;
+    G.missionsDone.push(m.id);
+    for (const [k, n] of Object.entries(m.reward)) {
+      if (k === 'scrap') { G.scrap += n; emit('scrapGained', n); }
+      else if (k === 'refugee') { if (G.town) spawnRefugees(n); else G.scrap += 10 * n; }
+      else G.res[k] += n;
+    }
+    toast(`📜 Mission done: ${m.text}! ${rewardText(m.reward)}`, 3000, true);
+    emit('missionDone', m);
+    Save.write();
+    break;                                     // one at a time, so each toast is seen
+  }
+  const top = activeMissions()[0];
+  const text = top ? `${top.text} ${Math.min(MISSION_CHECKS[top.check](), top.n)}/${top.n}` : 'All missions done!';
+  if (missionChipEl.lastChild.textContent !== text) missionChipEl.lastChild.textContent = text;
+  if (missionsEl.classList.contains('open')) renderMissions();
+}
+function renderMissions() {
+  const rows = missionsEl.querySelector('.rows'), list = activeMissions(), total = CONFIG.missions.list.length;
+  missionsEl.querySelector('.sub').textContent = `${G.missionsDone.length} of ${total} done`;
+  rows.innerHTML = list.length ? '' : '<p class="sub">You did them all!</p>';
+  for (const m of list) {
+    const v = Math.min(MISSION_CHECKS[m.check](), m.n);
+    rows.insertAdjacentHTML('beforeend', `<div class="mrow"><b>${m.text}</b><small>${v}/${m.n} · Reward: ${rewardText(m.reward)}</small><div class="bar"><i style="width:${v / m.n * 100}%"></i></div></div>`);
+  }
+}
+function openMissions(on) {
+  if (!window.__ready) return;
+  missionsEl.classList.toggle('open', on); setPaused('missions', on);
+  if (on) { renderMissions(); for (const k in keys) keys[k] = false; }
+}
+missionChipEl.addEventListener('pointerdown', (e) => { e.stopPropagation(); openMissions(true); });
+missionsEl.querySelector('.close').addEventListener('click', () => openMissions(false));
+addEventListener('keydown', (e) => {
+  if (e.code === 'KeyJ' && !e.repeat) openMissions(!missionsEl.classList.contains('open'));
+  if (e.code === 'Escape' && missionsEl.classList.contains('open')) openMissions(false);
+});
 
 // ------------------------------------------------------------
 // SAVE: the map comes from a seed, so a save is just the seed, the build/rescue log and a few
@@ -3220,7 +3325,7 @@ const Save = {
     const data = { v: 1, seed: G.seed, log: G.log, day: G.day, scrap: G.scrap + paid, upgrades: G.upgrades, shelterLevel: G.shelterLevel,
       hp: Math.ceil(G.player.hp), walls: G.wallPieces.map(pc => pc.alive ? Math.round(pc.hp) : 0),
       sites: G.sites.map(o => Math.floor(o.stored)), searched: G.houses.flatMap((h, i) => h.searched ? [i] : []),
-      refugees: G.refugees.length, bitten: !!G.bitten, res: G.res, jobs: G.sites.map(o => o.workers || 0), builders: BUILDERS.workers, guards: GUARDS.workers,
+      refugees: G.refugees.length, bitten: !!G.bitten, res: G.res, jobs: G.sites.map(o => o.workers || 0), builders: BUILDERS.workers, guards: GUARDS.workers, kills: G.kills, retakes: G.retakes, missions: G.missionsDone,
       yards: G.sites.map(o => o.plot ? [o.hits, o.overrun ? 1 : 0, o.fence?.broken ? 1 : 0] : 0),
       cons: Object.fromEntries(G.plots.filter(o => o.cons).map(o => [o.def.id, Math.ceil(o.cons.left)])) };
     try { localStorage.setItem(CONFIG.save.key, JSON.stringify(data)); } catch {}
@@ -3252,6 +3357,9 @@ const Save = {
     if (G.town && d.refugees) spawnRefugees(d.refugees, true);
     // Old saves had no materials: the town gets its starting food
     Object.assign(G.res, d.res || { food: G.town ? CONFIG.town.food.start : 0 });
+    G.kills = d.kills || 0; G.retakes = d.retakes || 0;
+    // Older saves: missions already met count as done (no surprise pile of rewards)
+    G.missionsDone = d.missions || CONFIG.missions.list.filter(m => MISSION_CHECKS[m.check]() >= m.n).map(m => m.id);
     // (older saves: every building gets one worker if there's someone free)
     (d.jobs || G.sites.map(o => o.slots ? 1 : 0)).forEach((n, i) => {
       const site = G.sites[i];
@@ -3438,6 +3546,7 @@ on('playerDown', () => Audio.play('down'));
 on('wallBroken', () => Audio.play('wall'));
 on('survivorJoined', () => { if (!restoring) Audio.play('join'); });
 on('refugeeArrived', () => Audio.play('join'));
+on('missionDone', () => Audio.play('dawn'));
 on('nightStart', () => Audio.play('horn'));
 on('dayStart', () => Audio.play('dawn'));
 
