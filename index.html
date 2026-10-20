@@ -191,6 +191,8 @@
   #pause .card { width: min(90%, 340px); padding: 18px; display: flex; flex-direction: column; gap: 10px; text-align: center;
     background: var(--paper); border: 4px solid var(--ink); border-radius: 26px; box-shadow: 0 6px 0 var(--ink); }
   #pause h2 { font-size: 28px; }
+  #pause .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  #pause button.off { color: var(--muted); background: #e3e8f5; }
   #pause button { font: inherit; font-size: 19px; font-weight: 700; padding: 8px; cursor: pointer; color: var(--ink);
     background: var(--soft); border: 3px solid var(--ink); border-radius: 999px; box-shadow: 0 3px 0 var(--ink); }
   #pause button.go { color: #fff; background: linear-gradient(var(--green1), var(--green2)); text-shadow: 0 2px 0 rgba(30,42,74,.35); }
@@ -240,8 +242,9 @@
   <div id="pause"><div class="card"><h2>Paused</h2>
     <button class="go" id="resumeBtn">Resume</button>
     <button id="fullBtn">Fullscreen</button>
+    <div class="row"><button id="sfxBtn">Sound: On</button><button id="musicBtn">Music: On</button></div>
     <div class="keys"><kbd>WASD</kbd><span>Move (arrow keys work too)</span><kbd>Mouse</kbd><span>Or click and drag to move</span>
-      <kbd>Wheel</kbd><span>Zoom in and out (or + / -)</span><kbd>Esc</kbd><span>Pause</span><kbd>F</kbd><span>Fullscreen</span></div>
+      <kbd>Wheel</kbd><span>Zoom in and out (or + / -)</span><kbd>Esc</kbd><span>Pause</span><kbd>F</kbd><span>Fullscreen</span><kbd>M</kbd><span>Mute sound and music</span></div>
     <p class="touch-only">Drag anywhere to move. Pinch-free: shooting is automatic.</p>
   </div></div>
   <div id="loading"><h1>Dawnhold<small>HOLD THE NIGHT · BUILD BY DAY</small></h1>
@@ -268,7 +271,11 @@ const CONFIG = {
   sim: { step: 1 / 60, maxDelta: 0.1 },
   // Progress is saved in the browser (localStorage) every few seconds and on every build.
   // A reload puts you back at the start of the day you were on, with everything you built.
-  save: { key: 'dawnhold.save.v2', every: 5 },   // bump the version whenever map generation changes
+  save: { key: 'dawnhold.save.v2', every: 5 },
+  // Sound: every effect and both music loops are made in code with Web Audio (no audio files).
+  // Volumes 0..1. limits = most plays per second, so 200 zombies dying don't turn into noise.
+  audio: { master: 0.7, sfx: 0.8, music: 0.32, limits: { shot: 14, hit: 12, kill: 10, pickup: 16, pour: 10, bite: 6 },
+    tempoDay: 84, tempoNight: 132 },   // bump the version whenever map generation changes
   // Prices in plots/gunLevels/zones are base prices. Every new thing you build makes
   // the next unpaid one pricier: price = base * (1 + growth * built), so the start is cheap.
   economy: { growth: 0.07 },
@@ -1560,6 +1567,7 @@ function hurtPlayer(dmg) {
   if (p.down > 0 || p.safe > 0) return;
   if (!G.bitten) { G.bitten = true; toast('Ouch! Zombies bite. Keep moving!'); }
   p.hp -= dmg; p.sinceHit = 0; p.hurt = H.hurtFlash;
+  emit('playerHurt');
   G.shake = Math.max(G.shake, H.hurtShake);
   burst(p.x, 1.4, p.z, 3, 0xff3d6e);
   if (p.hp <= 0) knockDown();
@@ -1839,6 +1847,7 @@ function damageWall(piece, amount) {
   wallGfx.dirty = true;
   if (piece.hp > 0) return;
   setPiece(piece, false);
+  emit('wallBroken', piece);
   burst(piece.x, 1.2, piece.z, 12, CONFIG.structures.wall.stakeColor);
   G.shake = Math.min(0.6, G.shake + 0.25);
   // Open the side's plot again as a repair job
@@ -2233,6 +2242,7 @@ function refugeeSystem(dt) {
         const gift = Math.round(rand(R.gift[0], R.gift[1]));
         for (let i = 0; i < gift; i++) spawnScrap(r.x, r.z, 1);
         toast(`A refugee joined! +${gift} scrap gift`);
+        emit('refugeeArrived');
         burst(r.x, 1.5, r.z, 10, CONFIG.colors.scrap);
         r.wait = rand(R.wanderPause[0], R.wanderPause[1]);
       } else if ((r.wait -= dt) <= 0) { [r.tx, r.tz] = townSpot(); r.wait = rand(R.wanderPause[0], R.wanderPause[1]); }
@@ -2291,6 +2301,7 @@ function buyStat(key) {
   emit('scrapSpent', cost);
   burst(G.player.x, 1.5, G.player.z, 14, CONFIG.colors.scrap);
   toast(`${CONFIG.upgrades.stats[key].label} level ${G.upgrades[key]}!`);
+  Audio.play('upgrade');
 }
 function buyShelter() {
   const cost = CONFIG.upgrades.shelterCosts[G.shelterLevel - 1];
@@ -2650,6 +2661,157 @@ function saveSystem(dt) { if ((saveTimer += dt) >= CONFIG.save.every) { saveTime
 addEventListener('pagehide', () => Save.write());
 document.addEventListener('visibilitychange', () => { if (document.hidden) Save.write(); });
 
+// ------------------------------------------------------------
+// AUDIO: Web Audio synth. Effects are tiny envelopes on oscillators / noise; music is a
+// look-ahead step sequencer (calm pentatonic plucks by day, driving minor bass + drums at night).
+// Starts on the PLAY tap (browsers only allow sound after a click).
+// ------------------------------------------------------------
+const Audio = {
+  ctx: null, out: null, sfxBus: null, musicBus: null, noise: null, recent: {},
+  sfxOn: true, musicOn: true, step: 0, nextTime: 0, timer: 0, mode: 'day',
+  init() {
+    if (this.ctx) return;
+    try {
+      const A = CONFIG.audio, ctx = this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      this.out = ctx.createGain(); this.out.gain.value = A.master;
+      const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 6;
+      this.out.connect(comp).connect(ctx.destination);
+      this.sfxBus = ctx.createGain(); this.sfxBus.connect(this.out);
+      this.musicBus = ctx.createGain(); this.musicBus.connect(this.out);
+      // One second of white noise, reused by every noisy effect
+      const buf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate), d = buf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+      this.noise = buf;
+      try { const s = JSON.parse(localStorage.getItem('dawnhold.audio')); if (s) { this.sfxOn = s.sfx; this.musicOn = s.music; } } catch {}
+      this.apply();
+      this.nextTime = ctx.currentTime + 0.1;
+      this.timer = setInterval(() => this.schedule(), 50);
+    } catch (err) { console.warn('No audio', err); this.ctx = null; }
+  },
+  apply() {
+    if (!this.ctx) return;
+    const A = CONFIG.audio, t = this.ctx.currentTime;
+    this.sfxBus.gain.setTargetAtTime(this.sfxOn ? A.sfx : 0, t, 0.05);
+    this.musicBus.gain.setTargetAtTime(this.musicOn ? A.music : 0, t, 0.3);
+    try { localStorage.setItem('dawnhold.audio', JSON.stringify({ sfx: this.sfxOn, music: this.musicOn })); } catch {}
+    sfxBtnEl.textContent = `Sound: ${this.sfxOn ? 'On' : 'Off'}`; sfxBtnEl.classList.toggle('off', !this.sfxOn);
+    musicBtnEl.textContent = `Music: ${this.musicOn ? 'On' : 'Off'}`; musicBtnEl.classList.toggle('off', !this.musicOn);
+  },
+  pause(on) { if (this.ctx) on ? this.ctx.suspend() : this.ctx.resume(); },
+  // Rate limit: skip a sound if too many of its kind already played this second
+  ok(kind) {
+    const lim = CONFIG.audio.limits[kind];
+    if (!lim || !this.ctx) return !!this.ctx;
+    const now = this.ctx.currentTime, r = this.recent[kind] ||= [];
+    while (r.length && now - r[0] > 1) r.shift();
+    if (r.length >= lim) return false;
+    r.push(now); return true;
+  },
+  // A pitched blip: type, start/end frequency, length, volume, optional start delay
+  tone(type, f0, f1, len, vol, when = 0, bus = this.sfxBus) {
+    const c = this.ctx, t = c.currentTime + when, o = c.createOscillator(), g = c.createGain();
+    o.type = type; o.frequency.setValueAtTime(f0, t); if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(Math.max(f1, 20), t + len);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + 0.008); g.gain.exponentialRampToValueAtTime(0.0001, t + len);
+    o.connect(g).connect(bus); o.start(t); o.stop(t + len + 0.02);
+  },
+  // Filtered noise burst (gunshots, hits, cracks, hi-hats)
+  hiss(freq, q, len, vol, when = 0, type = 'bandpass', bus = this.sfxBus, at) {
+    const c = this.ctx, t = at ?? c.currentTime + when, src = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
+    src.buffer = this.noise; src.playbackRate.value = 0.8 + Math.random() * 0.4;
+    f.type = type; f.frequency.value = freq; f.Q.value = q;
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + len);
+    src.connect(f).connect(g).connect(bus); src.start(t, Math.random() * 0.5); src.stop(t + len + 0.02);
+  },
+  play(name, arg) {
+    if (!this.ok(name)) return;
+    const r = 1 + (Math.random() - 0.5) * 0.12;       // small pitch wobble so repeats don't drone
+    switch (name) {
+      case 'shot': this.hiss(1800 * r, 0.8, 0.09, 0.5); this.tone('square', 420 * r, 110, 0.06, 0.12); break;
+      case 'hit': this.hiss(700 * r, 1.5, 0.06, 0.25); break;
+      case 'kill': this.tone('sawtooth', 240 * r, 60, 0.18, 0.12); this.hiss(400 * r, 2, 0.14, 0.25, 0, 'lowpass'); break;
+      case 'pickup': { const k = Math.min(arg || 0, 12); this.tone('sine', 880 * 1.06 ** k, 1320 * 1.06 ** k, 0.07, 0.12); break; }
+      case 'pour': this.tone('triangle', 520 * r, 480, 0.05, 0.08); break;
+      case 'build': [523, 659, 784, 1047].forEach((f, i) => this.tone('triangle', f, f, 0.22, 0.16, i * 0.07)); break;
+      case 'upgrade': [659, 988].forEach((f, i) => this.tone('square', f, f, 0.12, 0.08, i * 0.08)); break;
+      case 'bite': this.tone('sawtooth', 160 * r, 70, 0.16, 0.22); this.hiss(300, 1, 0.12, 0.35, 0, 'lowpass'); break;
+      case 'down': this.tone('sawtooth', 300, 50, 0.9, 0.25); break;
+      case 'wall': this.hiss(2500, 0.6, 0.25, 0.5, 0, 'highpass'); this.tone('square', 140, 50, 0.2, 0.15); break;
+      case 'join': [587, 740, 880].forEach((f, i) => this.tone('sine', f, f, 0.18, 0.14, i * 0.09)); break;
+      case 'unlock': this.tone('sine', 300, 900, 0.5, 0.14); this.hiss(1200, 0.5, 0.5, 0.12); break;
+      case 'horn': this.tone('sawtooth', 110, 98, 1.6, 0.22); this.tone('sawtooth', 165, 147, 1.6, 0.14); break;
+      case 'dawn': [392, 494, 587, 784].forEach((f, i) => this.tone('triangle', f, f, 0.4, 0.14, i * 0.12)); break;
+      case 'click': this.tone('sine', 660, 660, 0.04, 0.08); break;
+    }
+  },
+  // ---- music: 16-step bars scheduled a little ahead of time
+  schedule() {
+    const c = this.ctx, A = CONFIG.audio;
+    if (!c || c.state !== 'running') return;
+    const night = G.phase === 'night', bpm = night ? A.tempoNight : A.tempoDay, stepLen = 60 / bpm / 4;
+    while (this.nextTime < c.currentTime + 0.2) {
+      this.musicStep(this.step, this.nextTime, night, stepLen);
+      this.nextTime += stepLen; this.step = (this.step + 1) % 64;
+    }
+  },
+  note(type, freq, t, len, vol) {
+    const c = this.ctx, o = c.createOscillator(), g = c.createGain();
+    o.type = type; o.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + len);
+    o.connect(g).connect(this.musicBus); o.start(t); o.stop(t + len + 0.02);
+  },
+  musicStep(i, t, night, stepLen) {
+    const hz = (n) => 220 * 2 ** (n / 12), bar = (i >> 4) & 3, s = i & 15;
+    if (!night) {
+      // Day: C major pentatonic plucks over slow roots, sparse and friendly
+      const roots = [0 + 3, -4 + 3, 5 + 3, -2 + 3], pent = [0, 2, 4, 7, 9, 12, 14, 16];
+      if (s === 0) { this.note('triangle', hz(roots[bar] - 12), t, stepLen * 14, 0.22); this.note('sine', hz(roots[bar] - 5), t, stepLen * 14, 0.08); }
+      if (s % 2 === 0 && ((i * 7) % 5) < 3) this.note('triangle', hz(3 + pent[(i * 5 + bar * 3) % pent.length]), t, stepLen * 2.5, 0.09);
+    } else {
+      // Night: A minor, pulsing bass on every 8th, kick + hat, a stab every bar
+      const roots = [0, 0, -4, -2];
+      if (s % 2 === 0) this.note('sawtooth', hz(roots[bar] - 24), t, stepLen * 1.6, 0.16);
+      if (s % 4 === 0) { this.kick(t); }
+      if (s % 4 === 2) this.hiss(7000, 0.7, 0.04, 0.09, 0, 'highpass', this.musicBus, t);
+      if (s === 12) this.hiss(1800, 0.9, 0.12, 0.18, 0, 'bandpass', this.musicBus, t);
+      if (s === 0 || s === 6) [0, 3, 7].forEach(n => this.note('square', hz(roots[bar] + n), t, stepLen * 1.2, 0.035));
+    }
+  },
+  kick(t) {
+    const c = this.ctx, o = c.createOscillator(), g = c.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    g.gain.setValueAtTime(0.5, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.2);
+    o.connect(g).connect(this.musicBus); o.start(t); o.stop(t + 0.22);
+  },
+};
+const sfxBtnEl = document.getElementById('sfxBtn'), musicBtnEl = document.getElementById('musicBtn');
+sfxBtnEl.addEventListener('click', () => { Audio.sfxOn = !Audio.sfxOn; Audio.apply(); Audio.play('click'); });
+musicBtnEl.addEventListener('click', () => { Audio.musicOn = !Audio.musicOn; Audio.apply(); });
+addEventListener('keydown', (e) => {
+  if (e.code !== 'KeyM' || e.repeat || !Audio.ctx) return;
+  const on = !(Audio.sfxOn || Audio.musicOn);
+  Audio.sfxOn = Audio.musicOn = on; Audio.apply();
+  toast(on ? 'Sound on' : 'Sound off');
+});
+// Game events -> sounds
+let pickupCombo = 0, pickupTime = 0;
+on('shot', () => Audio.play('shot'));
+on('zombieHit', () => Audio.play('hit'));
+on('zombieKilled', () => Audio.play('kill'));
+on('scrapGained', () => {
+  const now = performance.now();
+  pickupCombo = now - pickupTime < 400 ? pickupCombo + 1 : 0; pickupTime = now;   // fast pickups climb in pitch
+  Audio.play('pickup', pickupCombo);
+});
+on('scrapSpent', () => Audio.play('pour'));
+on('built', (def) => { if (!restoring) Audio.play(def.type === 'zone' ? 'unlock' : 'build'); });
+on('playerHurt', () => Audio.play('bite'));
+on('playerDown', () => Audio.play('down'));
+on('wallBroken', () => Audio.play('wall'));
+on('survivorJoined', () => { if (!restoring) Audio.play('join'); });
+on('refugeeArrived', () => Audio.play('join'));
+on('nightStart', () => Audio.play('horn'));
+on('dayStart', () => Audio.play('dawn'));
+
 // Small seeded random (mulberry32): the map is built with it so the same seed gives the same map
 function seededRandom(seed) {
   return () => {
@@ -2746,7 +2908,7 @@ function setPaused(reason, on) {
   const was = G.paused;
   G.paused = G.pauseReasons.size > 0;
   if (was && !G.paused) last = performance.now();   // don't fast-forward through the pause
-  if (G.paused !== was) Platform.gameplay(!G.paused && Platform.playing);
+  if (G.paused !== was) { Platform.gameplay(!G.paused && Platform.playing); Audio.pause(G.paused); }
 }
 document.addEventListener('visibilitychange', () => { setPaused('hidden', document.hidden); if (document.hidden) setMenu(true); });
 const lostEl = document.getElementById('lost');
@@ -2818,11 +2980,12 @@ async function start() {
   const play = () => {
     if (window.__ready) return;
     window.__ready = true;
+    Audio.init();                        // the PLAY tap is the click browsers need before sound can start
     removeEventListener('keydown', onKey);
     loadingEl.classList.add('gone');
     frame.classList.remove('title');
     setTimeout(() => loadingEl.remove(), 400);
-    if (CONFIG.debug.showFps) { window.__G = G; window.__dbg = { completePlot, emit, spawnRefugees, Save, MODELS, THREE }; }   // lets testers poke the game from the console
+    if (CONFIG.debug.showFps) { window.__G = G; window.__dbg = { completePlot, emit, spawnRefugees, Save, Audio, MODELS, THREE }; }   // lets testers poke the game from the console
     last = performance.now();
     requestAnimationFrame(frameLoop);
   };
