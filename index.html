@@ -280,7 +280,7 @@ const CONFIG = {
   // the next unpaid one pricier: price = base * (1 + growth * built), so the start is cheap.
   economy: { growth: 0.07 },
   ads: { firstDay: 3 },              // portal ad break at the start of each day from this one on
-  world: { halfSize: 0, clearRadius: 17 },   // halfSize is set from the zone grid below
+  world: { halfSize: 0, clearRadius: 17 },   // changing this (or anything random in map generation) changes saved maps   // halfSize is set from the zone grid below
   // The map is a honeycomb of hexagon zones. Home (center) is open; every other zone is fogged until unlocked.
   zones: {
     size: 22, radius: 3,                 // size = hex corner radius; radius 3 = home + 3 rings (37 zones)
@@ -307,7 +307,7 @@ const CONFIG = {
     forest: { treeMul: 2.4 },
     hills: { mounds: 6, moundSize: [3, 5.5], color: 0x7cc152, rocksMul: 2 },
     lake: { radius: 11, shore: 13, water: 0x4fb8e8, sand: 0xf3dea6, treeMul: 0.5 },
-    mountain: { peaks: 7, height: [11, 19], width: [6, 9.5], rimPeaks: 5, rock: 0x9a93ad, snow: 0xffffff },
+    mountain: { peaks: 7, height: [11, 19], width: [6, 9.5], rimPeaks: 5, edgeGap: 4.5, rock: 0x9a93ad, snow: 0xffffff },
   },
   // Landmarks: one of each in the outer ring. Pricier to unlock, guarded by a pack of zombies,
   // and full of big loot spots (search them like houses).
@@ -374,8 +374,8 @@ const CONFIG = {
     nearRange: 4.5 },        // closer than this, a plot's bubble shows its full name and details
   // Build plots. "requires" = only appears after that plot is built.
   plots: [
-    { id: 'shelter', type: 'shelter',   label: 'Shelter',      x: -5.5, z: -5.5, cost: 3 },
-    { id: 'bench',   type: 'workbench', label: 'Armory',  x: 5.5, z: -5.5, cost: 6, requires: 'shelter', info: 'Buy better guns here' },
+    { id: 'shelter', type: 'shelter',   label: 'Shelter',      x: -7.5, z: -6.5, cost: 3 },
+    { id: 'bench',   type: 'workbench', label: 'Armory',  x: 7.5, z: -6.5, cost: 6, requires: 'shelter', info: 'Buy better guns here' },
     // Walls: the outpost is ringed by a hexagon palisade; each plot builds one side.
     // They only show up from day `fromDay`, once the nights start getting bigger.
     // side = 0..5 going clockwise from south-east. Positions come from the hexagon (see hexPlots).
@@ -394,8 +394,11 @@ const CONFIG = {
     { id: 'towerNW', type: 'tower', label: 'Watchtower', corner: 4, cost: 10, requires: 'wallN' },
     { id: 'towerNE', type: 'tower', label: 'Watchtower', corner: 5, cost: 10, requires: 'wallNE' },
     // Town buildings: show up once all 6 walls are standing (the outpost becomes a town)
-    { id: 'hospital', type: 'hospital', label: 'Hospital', x: -4.9, z: 4.9, cost: 30, requires: 'town', info: 'Heal 3x faster in town · +25% max HP' },
-    { id: 'garage',   type: 'garage',   label: 'Garage',   x: 4.9,  z: 4.9, cost: 25, requires: 'town', info: 'Fixes every wall at dawn' },
+    { id: 'hospital', type: 'hospital', label: 'Hospital', x: -7.5, z: 6.5, cost: 30, requires: 'town', info: 'Heal 3x faster in town · +25% max HP' },
+    { id: 'garage',   type: 'garage',   label: 'Garage',   x: 7.5,  z: 6.5, cost: 25, requires: 'town', info: 'Fixes every wall at dawn' },
+    // One plot each upgrades every wall piece / every watchtower at once
+    { id: 'wallUp',  type: 'wallUp',  label: 'Upgrade Walls',  x: -3.6, z: -11, cost: 30, requires: 'anyWall' },
+    { id: 'towerUp', type: 'towerUp', label: 'Upgrade Towers', x: 3.6,  z: -11, cost: 25, requires: 'anyTower' },
   ],
   structures: {
     shelter:   { model: 'shelter', scale: 4.5, radius: 2.4 },
@@ -409,10 +412,22 @@ const CONFIG = {
     // Wall ring: a hexagon of wooden palisade pieces (pointed stakes + cross beams) zombies can
     // break one by one. Walls only stop zombies; the player walks through (like Kingshot's gates).
     // ring = distance from the center to the middle of each side; plotInset = how far inside it the plot sits
-    wall: { ring: 12, plotInset: 2, pieceLength: 1.7, height: 1.6, stakes: 3, stakeRadius: 0.2,
+    wall: { ring: 15.5, plotInset: 2, pieceLength: 1.7, height: 1.6, stakes: 3, stakeRadius: 0.2,
       hp: 60, radius: 0.95, repairPerPiece: 3,
+      // Upgrades (Upgrade Walls plot): hp per piece, tint over the wood; repairs cost more per level
+      levels: [
+        { name: 'Wood',       hp: 60 },
+        { name: 'Reinforced', hp: 130, cost: 30, tint: 0xc9a27a },
+        { name: 'Iron',       hp: 240, cost: 75, tint: 0x9fb0d0 },
+      ],
       stakeColor: 0xc98a4b, tipColor: 0xe8b77a, beamColor: 0x7a5230 },
-    tower: { height: 3.4, radius: 1.2, range: 14 },
+    tower: { height: 3.4, radius: 1.2, range: 14,
+      // Upgrades (Upgrade Towers plot): the guard on top shoots further, faster and harder
+      levels: [
+        { name: 'Watchtower',     range: 14, fireRate: 1.4, damage: 1,   roof: 0xd9553b },
+        { name: 'Sniper Nest',    range: 17, fireRate: 2,   damage: 1.6, roof: 0x2f8fff, cost: 25 },
+        { name: 'Fortress Tower', range: 21, fireRate: 2.8, damage: 2.4, roof: 0x8a5cff, cost: 65 },
+      ] },
   },
   // Survivor camps around the map. Each camp has two people: one joins your squad and follows
   // you around shooting, the other stays home and works the camp's Scrap Yard.
@@ -422,7 +437,10 @@ const CONFIG = {
     hospital: { regenMul: 3, regenDelay: 1.5, maxHpMul: 1.25, downTime: 2 },
     refugees: { perDawn: [1, 3], gift: [5, 10], rate: 4, walkSpeed: 4.5, wanderPause: [2, 5],
       bedsPerShelter: 2, tints: [0xffe0a8, 0xc8e6ff, 0xffc8d8, 0xd8ffc8] },
-    stash: { x: 0, z: 3.6, cap: 40 },       // rate = refugees * refugees.rate per minute
+    stash: { x: 0, z: 5, cap: 40 },         // rate = refugees * refugees.rate per minute, paid straight to you
+    // Roads: once you're a town, every Scrap Yard gets a "Build Road" plot. The road runs from the
+    // walls to the yard with lamps and new houses along it: more beds, and the yard works faster.
+    roads: { cost: 20, outputMul: 1.5, beds: 2, houses: 2, houseScale: 4.5, houseTint: 0xffe2c4, lampEvery: 7, width: 3.2 },
   },
   survivors: {
     campScale: 0.7, campRadius: 3,
@@ -451,7 +469,7 @@ const CONFIG = {
   // time (even at night) until full; walk past to collect. The plot stays as its upgrade spot.
   sites: {
     plotOffset: 5,                       // build plot sits this far from the camp, toward the outpost
-    collectRange: 3.5, popMax: 12,       // scrap pieces that fly out when you collect
+    payEvery: 4,                         // work sites pay their scrap straight into your pile every few seconds
     yardLevels: [                        // rate = scrap per minute, cap = most it holds
       { cost: 8, rate: 10, cap: 25 },
       { cost: 20, rate: 18, cap: 45 },
@@ -522,6 +540,8 @@ const G = {
   day: 1, phase: 'day', phaseTime: 0, warned: false,
   hordeLeft: 0, hordeTimer: 0,
   wallPieces: [],                     // { side, x, z, rot, hp, alive, obstacle }
+  wallLevel: 0, towerLevel: 0,        // index into structures.wall.levels / tower.levels
+  extraBeds: 0,                       // beds added by roads out to the yards
   towers: [],                         // built watchtowers { x, z, guard }
   campSpots: [],                      // where survivor camps were placed
   crates: [],                         // loot crates { x, z, alive }
@@ -765,7 +785,8 @@ function hexAt(x, z) {
   return [rq, rr];
 }
 const zoneAt = (x, z) => zoneAtIndex(...hexAt(x, z));
-const isOpen = (x, z) => { const zn = zoneAt(x, z); return !!zn && zn.unlocked; };
+// Open = unlocked, or a mountain zone (you can wander between the peaks; the peaks themselves are solid)
+const isOpen = (x, z) => { const zn = zoneAt(x, z); return !!zn && (zn.unlocked || zn.blocked); };
 
 function buildGround() {
   const W = CONFIG.world.halfSize * 2 + 80;
@@ -777,7 +798,8 @@ function buildGround() {
     road.position.y = 0.01; scene.add(road);
   }
   // Outpost pad in the middle
-  const pad = new THREE.Mesh(new THREE.CylinderGeometry(9, 9.4, 0.3, 6, 1, false, Math.PI / 6), flat(CONFIG.colors.pad));   // hexagon, like the wall
+  const pr = CONFIG.structures.wall.ring * 0.75;
+  const pad = new THREE.Mesh(new THREE.CylinderGeometry(pr, pr + 0.4, 0.3, 6, 1, false, Math.PI / 6), flat(CONFIG.colors.pad));   // hexagon, like the wall
   pad.position.y = 0.15; scene.add(pad);
   // Darker grass patches for texture-free variety
   const H = CONFIG.world.halfSize, count = 300;
@@ -986,8 +1008,19 @@ function buildProps() {
       if (spot) { G.crates.push({ x: spot[0], z: spot[1], alive: true, rot: rand(0, 6) }); zone.loot.crates++; }
     }
   }
-  // A mountain range around the whole map: the edge of the world
+  // A mountain range around the whole map: the edge of the world. Peaks run along the outer edge itself,
+  // so the place you can't walk past always looks like a wall of rock
   for (const [q, r] of hexesWithin(Z.radius + 1)) if (!zoneAtIndex(q, r)) { const [x, z] = hexCenter(q, r); mountainPeaks(x, z, B.mountain.rimPeaks, null); }
+  for (const zone of ZONES) for (const [dq, dr] of HEX_DIRS) {
+    if (zoneAtIndex(zone.q + dq, zone.r + dr)) continue;
+    const [nx, nz] = hexCenter(zone.q + dq, zone.r + dr), mx = (zone.cx + nx) / 2, mz = (zone.cz + nz) / 2;
+    const d = Math.hypot(nx - zone.cx, nz - zone.cz), ax = -(nz - zone.cz) / d, az = (nx - zone.cx) / d;
+    for (let t = -Z.size * 0.55; t <= Z.size * 0.55; t += B.mountain.edgeGap) {
+      const M = B.mountain, w = rand(M.width[0], M.width[1]) * 0.8, h = rand(M.height[0], M.height[1]) * 0.8;
+      worldGfx.peaks.push(new THREE.Matrix4().compose(_v.set(mx + ax * t + (nx - zone.cx) / d * 2.5, 0, mz + az * t + (nz - zone.cz) / d * 2.5),
+        _q.setFromEuler(_e.set(0, rand(0, 6), 0)), _s.set(w, h, w)));
+    }
+  }
   flushWorldGfx();
   for (const [key, list] of Object.entries(lists)) instanceModel(key, list, key.startsWith('wreck') ? CONFIG.colors.wreckTint : 0);
 
@@ -1630,14 +1663,14 @@ function damageZombie(z, dmg, dirX, dirZ) {
 }
 
 // Fires one bullet from (x, z) facing `angle`, with the shooter's muzzle offset
-function fireBullet(x, z, angle, damage) {
+function fireBullet(x, z, angle, damage, ally = false) {
   const gun = CONFIG.gun, b = take(G.bullets);
   if (!b) return null;
   const fx = Math.sin(angle), fz = Math.cos(angle), [mx, , mz] = gun.muzzle;
   b.x = x + fx * mz + fz * mx; b.z = z + fz * mz - fx * mx;
   const aim = angle + rand(-gun.spread, gun.spread);
   b.dx = Math.sin(aim); b.dz = Math.cos(aim);
-  b.life = gun.bulletLife; b.damage = damage; b.alive = true;
+  b.life = gun.bulletLife; b.damage = damage; b.alive = true; b.ally = ally;   // ally = fired by a survivor
   return b;
 }
 
@@ -1669,6 +1702,7 @@ function combatSystem(dt) {
       const z = G.zombies[nearBuf[k]];
       if (!z.alive || z.dying > 0) continue;
       if ((z.x - b.x) ** 2 + (z.z - b.z) ** 2 < r2) {
+        z.byAlly = b.ally;
         damageZombie(z, b.damage, b.dx, b.dz);
         b.alive = false;
         break;
@@ -1770,6 +1804,7 @@ function addPlot(def) {
 function buildPlots() {
   hexPlots();
   CONFIG.plots.forEach(addPlot);
+  G.plots.filter(pl => pl.def.type === 'wallUp' || pl.def.type === 'towerUp').forEach(setLevelPlot);
   refreshZonePlots();
 }
 
@@ -1837,7 +1872,7 @@ function setPiece(piece, alive) {
   const W = CONFIG.structures.wall;
   if (alive && !piece.alive) piece.rise = 0;
   piece.alive = alive;
-  piece.hp = alive ? W.hp : 0;
+  piece.hp = alive ? wallMaxHp() : 0;
   piece.obstacle.r = alive ? W.radius : 0;
   wallGfx.dirty = true;
 }
@@ -1853,7 +1888,7 @@ function damageWall(piece, amount) {
   // Open the side's plot again as a repair job
   const pl = G.plots.find(o => o.def.type === 'wall' && o.def.side === piece.side), broken = G.wallPieces.filter(o => o.side === piece.side && !o.alive).length;
   pl.done = false; pl.label = `Repair ${pl.def.label}`; pl.base = 0;   // repairs don't inflate
-  pl.cost = Math.max(pl.paid + 1, broken * CONFIG.structures.wall.repairPerPiece);
+  pl.cost = Math.max(pl.paid + 1, broken * CONFIG.structures.wall.repairPerPiece * (1 + G.wallLevel));
   toast(`The ${pl.def.label.toLowerCase()} is broken!`);
 }
 function syncWalls(dt) {
@@ -1865,13 +1900,15 @@ function syncWalls(dt) {
     const k = pc.alive ? 1 + 2.7 * (pc.rise - 1) ** 3 + 1.7 * (pc.rise - 1) ** 2 : 0;   // pop up when built
     const sc = Math.max(k, 0.0001);
     mesh.setMatrixAt(i, _m.compose(_v.set(pc.x, 0, pc.z), _q.setFromEuler(_e.set(0, pc.rot, 0)), pc.alive ? _s.set(1, sc, 1) : _s.setScalar(sc)));
-    const h = pc.alive ? pc.hp / W.hp : 1;            // damaged pieces turn red
-    mesh.setColorAt(i, _c.setRGB(1, 0.45 + 0.55 * h, 0.45 + 0.55 * h));
+    const h = pc.alive ? pc.hp / wallMaxHp() : 1;     // damaged pieces turn red
+    mesh.setColorAt(i, _c.setRGB(1, 0.45 + 0.55 * h, 0.45 + 0.55 * h).multiply(wallTint));
   });
   if (wallGfx.dirty || animating) { mesh.instanceMatrix.needsUpdate = true; mesh.instanceColor.needsUpdate = true; }
   wallGfx.dirty = false;
 }
-const _c = new THREE.Color();
+const _c = new THREE.Color(), wallTint = new THREE.Color(1, 1, 1);
+const wallMaxHp = () => CONFIG.structures.wall.levels[G.wallLevel].hp;
+const towerStats = () => CONFIG.structures.tower.levels[G.towerLevel];
 
 // ---- Watchtower, built from simple wooden blocks
 function makeTower() {
@@ -1885,7 +1922,8 @@ function makeTower() {
   box(2.7, 0.3, 2.7, wood, 0, H, 0);                    // platform
   for (const [x, z, w, d] of [[0, -1.25, 2.7, 0.15], [0, 1.25, 2.7, 0.15], [-1.25, 0, 0.15, 2.7], [1.25, 0, 0.15, 2.7]])
     box(w, 0.5, d, wood, x, H + 0.4, z);                // railing
-  const cap = new THREE.Mesh(new THREE.ConeGeometry(2.2, 1.2, 4), roof);
+  const cap = new THREE.Mesh(new THREE.ConeGeometry(2.2, 1.2, 4), flat(towerStats().roof));
+  g.userData.roof = cap;
   cap.position.y = H + 2.3; cap.rotation.y = Math.PI / 4; g.add(cap);
   g.add(blobShadow(3.5));
   return g;
@@ -1920,6 +1958,7 @@ function crossSign(y) {
 function placeStructure(def) {
   if (def.type === 'zone') { unlockZone(def.zone); return; }
   if (def.type === 'yard') { placeYard(def); return; }
+  if (def.type === 'road') { buildRoad(def); return; }
   if (def.type === 'wall') { G.wallPieces.filter(p => p.side === def.side).forEach(p => setPiece(p, true)); return; }
   if (def.type === 'tower') {
     const t = makeTower();
@@ -1927,7 +1966,7 @@ function placeStructure(def) {
     scene.add(t); pop(t);
     G.obstacles.push({ x: def.x, z: def.z, r: CONFIG.structures.tower.radius });
     rebuildObstacleGrid();
-    const tower = { x: def.x, z: def.z, guard: null };
+    const tower = { x: def.x, z: def.z, guard: null, mesh: t };
     G.towers.push(tower);
     // Pull a ground guard up into the new tower
     const sv = G.survivors.find(o => o.state === 'following');
@@ -1971,13 +2010,14 @@ function toast(text, ms = 1800, big = false) {
 function completePlot(pl) {
   const def = pl.def, levels = CONFIG.gunLevels;
   if (!(def.type === 'wall' && G.built[def.id])) G.log.push('p:' + def.id);   // replayed on load (repairs aren't needed)
+  if (def.type === 'wallUp' || def.type === 'towerUp') { levelUp(pl); return; }
   if (!G.built[def.id]) {
     placeStructure(def);
     G.built[def.id] = true;
     G.buildCount++;
     if (def.type !== 'zone') toast(`${def.label} built!`);
   } else if (def.type === 'wall') {
-    G.wallPieces.filter(p => p.side === def.side).forEach(p => { if (!p.alive) setPiece(p, true); else p.hp = CONFIG.structures.wall.hp; });
+    G.wallPieces.filter(p => p.side === def.side).forEach(p => { if (!p.alive) setPiece(p, true); else p.hp = wallMaxHp(); });
     wallGfx.dirty = true;
     toast(`${def.label} repaired!`);
   } else if (def.type === 'yard') {
@@ -2006,11 +2046,41 @@ function completePlot(pl) {
   else if (def.type === 'yard' && CONFIG.sites.yardLevels[G.sites.find(o => o.plot === pl).level + 1]) {
     const site = G.sites.find(o => o.plot === pl), next = CONFIG.sites.yardLevels[site.level + 1];
     pl.base = next.cost; pl.cost = price(next.cost); pl.paid = 0; pl.label = `Upgrade Camp (Lv ${site.level + 2})`;
-    pl.el.querySelector('.info').textContent = `🏭 ${next.rate}/min · holds ${next.cap}`;
+    pl.el.querySelector('.info').textContent = `🏭 ${next.rate} scrap/min, sent to you`;
   }
   else { pl.done = true; pl.paid = 0; pl.pad.visible = false; showEl(pl.el, false); }
 }
 
+// Upgrade Walls / Upgrade Towers: raise every piece or tower one level, then offer the next one
+function levelUp(pl) {
+  const wall = pl.def.type === 'wallUp', S = CONFIG.structures, levels = wall ? S.wall.levels : S.tower.levels;
+  G.buildCount++;
+  if (wall) {
+    const before = wallMaxHp();
+    G.wallLevel++;
+    for (const pc of G.wallPieces) if (pc.alive) pc.hp += wallMaxHp() - before;
+    wallTint.setHex(levels[G.wallLevel].tint || 0xffffff);
+    wallGfx.dirty = true;
+  } else {
+    G.towerLevel++;
+    for (const t of G.towers) { t.mesh.userData.roof.material = flat(towerStats().roof); pop(t.mesh); }
+  }
+  toast(`${wall ? 'Walls' : 'Towers'} upgraded: ${levels[wall ? G.wallLevel : G.towerLevel].name}!`);
+  emit('built', pl.def);
+  setLevelPlot(pl);
+}
+function setLevelPlot(pl) {
+  const wall = pl.def.type === 'wallUp', S = CONFIG.structures, levels = wall ? S.wall.levels : S.tower.levels;
+  const lvl = wall ? G.wallLevel : G.towerLevel, next = levels[lvl + 1];
+  if (!next) { pl.done = true; pl.paid = 0; pl.pad.visible = false; showEl(pl.el, false); return; }
+  pl.base = next.cost; pl.cost = price(next.cost); pl.paid = 0;
+  pl.label = `${wall ? 'Walls' : 'Towers'} → ${next.name}`;
+  pl.el.querySelector('.info').textContent = wall ? `${next.hp} HP per wall piece` : `Range ${next.range} · ${next.fireRate} shots/s`;
+}
+on('built', (def) => {
+  if (def.type === 'wall') G.built.anyWall = true;
+  if (def.type === 'tower') G.built.anyTower = true;
+});
 function buildSystem(dt) {
   const B = CONFIG.build, p = G.player, half = B.plotSize / 2;
   for (const pl of G.plots) {
@@ -2045,7 +2115,7 @@ function buildSurvivorCamps() {
   });
 }
 // Shared aim-and-shoot for anyone carrying a gun. Returns true while aiming at something.
-function survivorShoot(sv, range, dt) {
+function survivorShoot(sv, range, dt, stats = null) {
   const SV = CONFIG.survivors, gun = CONFIG.gun;
   if (sv.target && !targetValid(sv.target, sv.x, sv.z, range)) { sv.target = null; sv.aimDelay = gun.acquireDelay; }
   if (!sv.target && (sv.aimDelay -= dt) <= 0) sv.target = findTarget(sv.x, sv.z, range);
@@ -2054,8 +2124,8 @@ function survivorShoot(sv, range, dt) {
   const want = Math.atan2(sv.target.x - sv.x, sv.target.z - sv.z);
   sv.angle = turnToward(sv.angle, want, SV.aimTurnSpeed * dt);
   if (sv.cooldown <= 0 && Math.abs(angleDiff(sv.angle, want)) < gun.aimCone) {
-    sv.cooldown = 1 / SV.fireRate;
-    fireBullet(sv.x, sv.z, sv.angle, SV.damage);
+    sv.cooldown = 1 / (stats || SV).fireRate;
+    fireBullet(sv.x, sv.z, sv.angle, (stats || SV).damage, true);
   }
   return true;
 }
@@ -2100,7 +2170,7 @@ function survivorSystem(dt) {
       sv.moving = 0.9;
     } else {
       // Guard (towers and camp workers): same rules as the player's aim, just slower. Towers see further.
-      survivorShoot(sv, sv.tower ? CONFIG.structures.tower.range : SV.range, dt);
+      survivorShoot(sv, sv.tower ? towerStats().range : SV.range, dt, sv.tower ? towerStats() : null);
     }
   }
 }
@@ -2149,24 +2219,27 @@ function siteSystem(dt) {
   const S = CONFIG.sites, p = G.player;
   for (const site of G.sites) {
     const lvl = site.stats ? site.stats() : S.yardLevels[site.level];
-    site.stored = Math.min(lvl.cap, site.stored + lvl.rate / 60 * dt);
-    site.cool -= dt;
+    site.stored += lvl.rate * (site.mul || 1) / 60 * dt;
+    if ((site.cool -= dt) > 0) continue;
+    site.cool = S.payEvery;
     const n = Math.floor(site.stored);
-    if (n < 1 || site.cool > 0 || Math.hypot(p.x - site.x, p.z - site.z) > S.collectRange) continue;
-    // Fly out as a handful of pieces that share the value, so the scrap pool never runs dry
-    const pieces = Math.min(S.popMax, n);
-    for (let i = 0; i < pieces; i++) spawnScrap(site.x, site.z, Math.floor(n / pieces) + (i < n % pieces ? 1 : 0));
-    site.stored -= n; site.cool = 1;
+    if (n < 1) continue;
+    // Paid straight into your pile, wherever you are
+    site.stored -= n; G.scrap += n; site.paid = 1;
+    emit('scrapGained', n);
   }
 }
 function syncSites() {
   const S = CONFIG.sites;
   for (const site of G.sites) {
-    const lvl = site.stats ? site.stats() : S.yardLevels[site.level], fill = site.stored / lvl.cap;
-    site.heap.scale.set(0.5 + fill * 0.6, 0.15 + fill, 0.5 + fill * 0.6);
+    const lvl = site.stats ? site.stats() : S.yardLevels[site.level], rate = Math.round(lvl.rate * (site.mul || 1));
+    // The heap swells a little each time it pays out, then settles
+    site.paid = Math.max(0, (site.paid || 0) - 0.03);
+    const k = 1 + site.paid * 0.4;
+    site.heap.scale.set(0.9 * k, 0.9 * k, 0.9 * k);
     placeBubble(site.el, site.x, 3.4, site.z);
-    const text = `${site.icon || '🏭'} ${Math.floor(site.stored)}/${lvl.cap}`;
-    if (text !== site.shown) { site.shown = text; site.textEl.textContent = text; site.el.classList.toggle('full', fill >= 1); }
+    const text = `${site.icon || '🏭'} +${rate}/min`;
+    if (text !== site.shown) { site.shown = text; site.textEl.textContent = text; }
   }
 }
 
@@ -2175,7 +2248,7 @@ function syncSites() {
 // the garage fixes the walls every morning
 // ------------------------------------------------------------
 const townChipEl = document.getElementById('townChip'), townCountEl = document.getElementById('townCount');
-const beds = () => G.shelterLevel * CONFIG.town.refugees.bedsPerShelter;
+const beds = () => G.shelterLevel * CONFIG.town.refugees.bedsPerShelter + G.extraBeds;
 const townCount = () => { townCountEl.textContent = `${G.refugees.length}/${beds()}`; };
 function startTown() {
   if (G.town) return;
@@ -2188,6 +2261,7 @@ function startTown() {
 }
 function finishTown() {
   townChipEl.style.display = ''; townCount();
+  G.sites.filter(o => o.plot).forEach(addRoadPlot);   // yards you already have can be reached by road
   // Town Stash: refugees' work piles up here, collect it like a Scrap Yard
   const T = CONFIG.town, pile = new THREE.Group();
   const heap = new THREE.Mesh(new THREE.ConeGeometry(1.1, 1.2, 6), flat(CONFIG.colors.scrap));
@@ -2204,6 +2278,7 @@ function finishTown() {
 }
 on('built', (def) => {
   if (def.type === 'wall' && CONFIG.plots.every(d => d.type !== 'wall' || G.built[d.id])) startTown();
+  if (def.type === 'yard' && G.town && G.built[def.id] && !G.plots.some(o => o.def.yard === def.id)) addRoadPlot(G.sites.find(o => o.plot?.def === def));
   if (def.type === 'shelter' || def.type === 'hospital') townCount();
 });
 // A random free spot inside the walls for refugees to stand around in
@@ -2255,6 +2330,48 @@ function refugeeSystem(dt) {
     r.moving = speed / CONFIG.survivors.walkSpeed;
   }
 }
+// Roads out to the yards: the town spreads along them
+function addRoadPlot(site) {
+  if (!site || G.plots.some(o => o.def.yard === site.plot.def.id)) return;
+  const d = Math.hypot(site.x, site.z) || 1, [x, z] = freeSpot(site.x, site.z, Math.atan2(-site.x, -site.z), 4.5, CONFIG.build.plotSize / 2 + 0.4,
+    [[site.plot.x, site.plot.z]]);
+  addPlot({ id: `road_${site.plot.def.id}`, type: 'road', label: 'Build Road', info: '🏘️ +2 beds · yard works 50% faster',
+    x, z, cost: CONFIG.town.roads.cost, requires: 'town', yard: site.plot.def.id });
+  if (!restoring) setTimeout(() => toast('Build a road out to your Scrap Yard!'), 2200);
+}
+function buildRoad(def) {
+  const R = CONFIG.town.roads, site = G.sites.find(o => o.plot?.def.id === def.yard);
+  if (!site) return;
+  // From just outside the walls to the yard
+  const len0 = Math.hypot(site.x, site.z), ux = site.x / len0, uz = site.z / len0, start = CONFIG.structures.wall.ring + 1;
+  const ax = ux * start, az = uz * start, len = Math.max(1, len0 - start - 2), ang = Math.atan2(ux, uz);
+  const road = new THREE.Mesh(new THREE.PlaneGeometry(R.width, len).rotateX(-Math.PI / 2), flat(CONFIG.colors.dirt));
+  road.position.set(ax + ux * len / 2, 0.012, az + uz * len / 2); road.rotation.y = ang;
+  scene.add(road);
+  // Lamps along one side (post + glowing bulb)
+  const post = flat(0x5b6789), bulb = new THREE.MeshBasicMaterial({ color: 0xffe066 });
+  for (let t = 4; t < len; t += R.lampEvery) {
+    const side = (Math.floor(t / R.lampEvery) % 2 ? 1 : -1) * (R.width / 2 + 0.6), x = ax + ux * t + uz * side, z = az + uz * t - ux * side;
+    const lamp = new THREE.Group(), pole = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 2.6, 5), post), b = new THREE.Mesh(new THREE.SphereGeometry(0.3, 6, 4), bulb);
+    pole.position.y = 1.3; b.position.y = 2.7; lamp.add(pole, b); lamp.position.set(x, 0, z);
+    scene.add(lamp); pop(lamp);
+  }
+  // New houses: the town spreads out along the road
+  let placed = 0;
+  for (let i = 0; i < R.houses * 3 && placed < R.houses; i++) {
+    const t = len * (0.3 + 0.4 * (i % 3) / 2), side = (i % 2 ? 1 : -1) * (R.width / 2 + 4), x = ax + ux * t + uz * side, z = az + uz * t - ux * side;
+    if (!isOpen(x, z) || zoneAt(x, z)?.blocked || G.obstacles.some(o => o.r > 0 && !o.zombieOnly && Math.hypot(o.x - x, o.z - z) < o.r + 3)) continue;
+    const key = placed % 2 ? 'houseA' : 'houseB', m = tinted(MODELS[key].scene.clone(), R.houseTint);
+    m.scale.setScalar(R.houseScale); m.position.set(x, 0, z); m.rotation.y = Math.atan2(ax + ux * t - x, az + uz * t - z);   // front door faces the road
+    scene.add(m); pop(m, R.houseScale);
+    G.obstacles.push({ x, z, r: 0.6 * R.houseScale });
+    placed++;
+  }
+  rebuildObstacleGrid();
+  site.mul = R.outputMul;
+  G.extraBeds += R.beds; townCount();
+  toast('Dawnhold grows out to the yard!', 2400, true);
+}
 // Garage: every dawn, broken and chipped walls come back to full for free
 function repairAllWalls() {
   let fixed = 0;
@@ -2262,7 +2379,7 @@ function repairAllWalls() {
     if (pl.def.type !== 'wall' || !G.built[pl.def.id]) continue;
     for (const pc of G.wallPieces) {
       if (pc.side !== pl.def.side) continue;
-      if (!pc.alive) { setPiece(pc, true); fixed++; } else if (pc.hp < CONFIG.structures.wall.hp) { pc.hp = CONFIG.structures.wall.hp; fixed++; }
+      if (!pc.alive) { setPiece(pc, true); fixed++; } else if (pc.hp < wallMaxHp()) { pc.hp = wallMaxHp(); fixed++; }
     }
     if (!pl.done) {                                    // close the repair job, hand back anything paid into it
       if (pl.paid) { G.scrap += pl.paid; emit('scrapGained', pl.paid); }
@@ -2464,7 +2581,9 @@ on('zombieHit', (z) => burst(z.x, 1.4, z.z, CONFIG.fx.hitBurst, CONFIG.fx.sparkC
 on('zombieKilled', (z) => {
   burst(z.x, 1.2, z.z, CONFIG.fx.deathBurst, CONFIG.fx.gooColor);
   const [lo, hi] = CONFIG.scrap.perZombie, n = lo + ((Math.random() * (hi - lo + 1)) | 0);
-  for (let i = 0; i < n; i++) spawnScrap(z.x, z.z, 1);
+  // Your survivors' kills pay you directly; your own kills drop scrap to scoop up
+  if (z.byAlly) { G.scrap += n; emit('scrapGained', n); }
+  else for (let i = 0; i < n; i++) spawnScrap(z.x, z.z, 1);
   G.shake = Math.min(0.5, G.shake + CONFIG.fx.killShake);
 });
 const scrapPill = document.getElementById('scrapPill');
