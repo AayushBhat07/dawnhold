@@ -1,0 +1,3 @@
+3D models and textures by Kenney (www.kenney.nl), CC0 1.0 public domain.
+Packs: Mini Arena, Starter Kit FPS, Starter Kit 3D Platformer, Starter Kit City Builder, Starter Kit Racing.
+Source: github.com/KenneyNL. Crediting is optional but appreciated.
