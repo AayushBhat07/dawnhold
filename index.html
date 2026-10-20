@@ -414,6 +414,7 @@ const CONFIG = {
     // ring = distance from the center to the middle of each side; plotInset = how far inside it the plot sits
     wall: { ring: 15.5, plotInset: 2, pieceLength: 1.7, height: 1.6, stakes: 3, stakeRadius: 0.2,
       hp: 60, radius: 0.95, repairPerPiece: 3,
+      indestructible: true,              // for now zombies can't break the main walls (no repairs or wall upgrades needed)
       // Upgrades (Upgrade Walls plot): hp per piece, tint over the wood; repairs cost more per level
       levels: [
         { name: 'Wood',       hp: 60 },
@@ -440,6 +441,9 @@ const CONFIG = {
     stash: { x: 0, z: 5, cap: 40 },         // rate = refugees * refugees.rate per minute, paid straight to you
     // Roads: once you're a town, every Scrap Yard gets a "Build Road" plot. The road runs from the
     // walls to the yard with lamps and new houses along it: more beds, and the yard works faster.
+    // Renovations: searched buildings in areas a road reaches get a "Renovate" plot.
+    // Houses become Workshops (scrap/min, paid to you); garages become Bunkhouses (refugee beds).
+    renovate: { cost: 15, workshopRate: 6, bunkBeds: 2, tint: 0xfff0b0, bunkTint: 0xc8e6ff },
     roads: { cost: 20, outputMul: 1.5, beds: 2, houses: 2, houseScale: 4.5, houseTint: 0xffe2c4, lampEvery: 7, width: 3.2 },
   },
   survivors: {
@@ -971,7 +975,8 @@ function buildProps() {
       // The search spot sits in front of the house, facing the roads
       const d = M[key].radius * M[key].scale + 1.4, hx = spot[0] + Math.sin(face) * d, hz = spot[1] + Math.cos(face) * d;
       zone.obstacles.push({ x: hx, z: hz, r: 1.2 });       // keeps trees off it (placement only, not solid)
-      G.houses.push({ x: hx, z: hz, zone, searched: false, t: 0, pad: null, el: null, scrap: zone.landmark ? LM.loot : null });
+      G.houses.push({ x: hx, z: hz, zone, searched: false, t: 0, pad: null, el: null, scrap: zone.landmark ? LM.loot : null,
+        model: key, mx: spot[0], mz: spot[1], face });
       zone.loot.houses++;
     }
     // Abandoned trucks along the roads, a bit crooked
@@ -1101,6 +1106,7 @@ function houseSystem(dt) {
     h.t = on ? h.t + dt : Math.max(0, h.t - dt);
     if (h.t < S.time) continue;
     h.searched = true;
+    if (h.zone.connected && G.town) refreshRenovations();
     const [lo, hi] = h.scrap || S.scrap, n = lo + ((Math.random() * (hi - lo + 1)) | 0);
     for (let i = 0; i < n; i++) spawnScrap(h.x, h.z, n > 20 ? 2 : 1);
     burst(h.x, 1.2, h.z, 12, CONFIG.colors.scrap);
@@ -1569,7 +1575,7 @@ function zombieSystem(dt) {
       if (d < min && d > 0.0001) { z.x = o.x + ox / d * min; z.z = o.z + oz / d * min; if (o.piece) blockedBy = o.piece; }
     }
     // Pressed against a wall: claw at it until it breaks
-    if (blockedBy && G.day >= Z.wallDamageFromDay) damageWall(blockedBy, Z.wallDamage * dt);
+    if (blockedBy && G.day >= Z.wallDamageFromDay && !CONFIG.structures.wall.indestructible) damageWall(blockedBy, Z.wallDamage * dt);
     // Never stand inside the player, so the crowd can't bury them
     const px = z.x - p.x, pz = z.z - p.z, pd = Math.hypot(px, pz);
     // Close enough to bite
@@ -1959,6 +1965,7 @@ function placeStructure(def) {
   if (def.type === 'zone') { unlockZone(def.zone); return; }
   if (def.type === 'yard') { placeYard(def); return; }
   if (def.type === 'road') { buildRoad(def); return; }
+  if (def.type === 'renovate') { renovate(def); return; }
   if (def.type === 'wall') { G.wallPieces.filter(p => p.side === def.side).forEach(p => setPiece(p, true)); return; }
   if (def.type === 'tower') {
     const t = makeTower();
@@ -2072,7 +2079,7 @@ function levelUp(pl) {
 function setLevelPlot(pl) {
   const wall = pl.def.type === 'wallUp', S = CONFIG.structures, levels = wall ? S.wall.levels : S.tower.levels;
   const lvl = wall ? G.wallLevel : G.towerLevel, next = levels[lvl + 1];
-  if (!next) { pl.done = true; pl.paid = 0; pl.pad.visible = false; showEl(pl.el, false); return; }
+  if (!next || (wall && S.wall.indestructible)) { pl.done = true; pl.paid = 0; pl.pad.visible = false; showEl(pl.el, false); return; }
   pl.base = next.cost; pl.cost = price(next.cost); pl.paid = 0;
   pl.label = `${wall ? 'Walls' : 'Towers'} → ${next.name}`;
   pl.el.querySelector('.info').textContent = wall ? `${next.hp} HP per wall piece` : `Range ${next.range} · ${next.fireRate} shots/s`;
@@ -2368,9 +2375,41 @@ function buildRoad(def) {
     placed++;
   }
   rebuildObstacleGrid();
+  // Every area the road passes through is now connected to town
+  for (let t = 0; t <= len0; t += 4) { const zn = zoneAt(ux * t, uz * t); if (zn) zn.connected = true; }
+  refreshRenovations();
   site.mul = R.outputMul;
   G.extraBeds += R.beds; townCount();
   toast('Dawnhold grows out to the yard!', 2400, true);
+}
+// Renovations: searched houses in road-connected areas can be rebuilt into production buildings
+function refreshRenovations() {
+  const RV = CONFIG.town.renovate;
+  G.houses.forEach((h, i) => {
+    if (!h.model || !h.searched || !h.zone.connected || h.renoPlot) return;
+    const bunk = h.model === 'garage';
+    h.renoPlot = true;
+    addPlot({ id: `reno${i}`, type: 'renovate', label: bunk ? 'Renovate: Bunkhouse' : 'Renovate: Workshop', x: h.x, z: h.z, cost: RV.cost,
+      info: bunk ? `🛏️ +${RV.bunkBeds} refugee beds` : `🔧 +${RV.workshopRate} scrap/min, sent to you`, requires: 'town', house: i });
+  });
+}
+function renovate(def) {
+  const RV = CONFIG.town.renovate, h = G.houses[def.house], M = CONFIG.models[h.model], bunk = h.model === 'garage';
+  // A fresh, painted copy just over the ruin (slightly bigger, so it covers it)
+  const m = tinted(MODELS[h.model].scene.clone(), bunk ? RV.bunkTint : RV.tint);
+  m.position.set(h.mx, 0, h.mz); m.rotation.y = h.face;
+  scene.add(m); pop(m, M.scale * 1.03);
+  burst(h.mx, 3, h.mz, 20, 0xffffff, 1.3);
+  if (bunk) { G.extraBeds += RV.bunkBeds; townCount(); toast('Bunkhouse ready: more beds for refugees!'); return; }
+  // Workshop: a little scrap heap out front that pays you every few seconds
+  const pile = new THREE.Group(), heap = new THREE.Mesh(new THREE.ConeGeometry(0.8, 0.9, 6), flat(CONFIG.colors.scrap));
+  heap.geometry.translate(0, 0.45, 0); pile.add(heap); pile.position.set(h.x, 0, h.z);
+  scene.add(pile); pop(pile);
+  const el = makeBubble('', true);
+  el.classList.add('site');
+  G.sites.push({ x: h.x, z: h.z, stored: 0, cool: 0, pile, heap, el, textEl: el.firstChild, shown: '', icon: '🔧',
+    stats: () => ({ rate: RV.workshopRate, cap: 1 }) });
+  toast('Workshop running: scrap flows to you!');
 }
 // Garage: every dawn, broken and chipped walls come back to full for free
 function repairAllWalls() {
@@ -2743,6 +2782,7 @@ const Save = {
   apply(d) {
     restoring = true;
     G.day = d.day;
+    d.searched.forEach(i => { if (G.houses[i]) G.houses[i].searched = true; });
     for (const entry of d.log) {
       const [kind, id] = entry.split(':');
       if (kind === 'p') { const pl = G.plots.find(o => o.def.id === id); if (pl) completePlot(pl); }
@@ -2756,10 +2796,10 @@ const Save = {
       const pc = G.wallPieces[i];
       if (!pc || !pc.alive) return;
       if (hp > 0) pc.hp = hp;
-      else damageWall(pc, pc.hp + 1);   // reopens that side's repair plot
+      else if (!CONFIG.structures.wall.indestructible) damageWall(pc, pc.hp + 1);   // reopens that side's repair plot
     });
     d.sites.forEach((n, i) => { if (G.sites[i]) G.sites[i].stored = n; });
-    d.searched.forEach(i => { if (G.houses[i]) G.houses[i].searched = true; });
+
     if (G.town && d.refugees) spawnRefugees(d.refugees, true);
     if (G.shelterLevel) { G.player.x = door.x; G.player.z = door.z; }
     // Everyone who was walking somewhere is already there
@@ -2978,7 +3018,7 @@ on('dayStart', () => { if (G.day >= CONFIG.ads.firstDay) Platform.breakAd(); });
 on('dayStart', () => {
   const wallDay = CONFIG.plots.find(d => d.type === 'wall').fromDay;
   if (G.day === wallDay) setTimeout(() => toast('Walls unlocked! Fence in your outpost'), 1900);
-  if (G.day === CONFIG.zombies.wallDamageFromDay) setTimeout(() => toast('Zombies can break walls now!'), 1900);
+  if (G.day === CONFIG.zombies.wallDamageFromDay && !CONFIG.structures.wall.indestructible) setTimeout(() => toast('Zombies can break walls now!'), 1900);
 });
 
 // ============================================================
